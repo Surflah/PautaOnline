@@ -260,7 +260,7 @@ export default function SessoesPage() {
                             <span>Roteiro A4</span>
                           </Link>
                           <Link
-                            href={`/sessoes/${s.id}/pauta`}
+                            href={`/sessoes/${s.id}/deliberacao`}
                             className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-all"
                           >
                             <CheckCircle2 className="w-3.5 h-3.5" />

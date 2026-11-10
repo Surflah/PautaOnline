@@ -422,6 +422,14 @@ export default function GerenciarPautaPage() {
 
           <div className="flex flex-wrap items-center gap-2.5">
             <Link
+              href={`/sessoes/${sessaoId}/deliberacao`}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs sm:text-sm font-extrabold shadow-sm transition-all"
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              <span>Iniciar Deliberação</span>
+            </Link>
+
+            <Link
               href={`/sessoes/${sessaoId}/roteiro`}
               className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-slate-300 hover:bg-slate-50 text-slate-800 text-xs sm:text-sm font-bold shadow-xs transition-all"
             >

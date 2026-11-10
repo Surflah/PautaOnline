@@ -281,6 +281,13 @@ export default async function DashboardPage() {
                       <td className="py-4 px-6 text-right">
                         <div className="inline-flex items-center justify-end gap-2">
                           <Link
+                            href={`/sessoes/${s.id}/deliberacao`}
+                            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-all"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>Deliberar</span>
+                          </Link>
+                          <Link
                             href={`/sessoes/${s.id}/pauta`}
                             className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold transition-all"
                           >

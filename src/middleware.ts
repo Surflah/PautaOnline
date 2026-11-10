@@ -16,6 +16,8 @@ export async function middleware(req: NextRequest) {
   if (
     pathname.startsWith('/_next') ||
     pathname.startsWith('/uploads') ||
+    pathname.endsWith('/telao-leitura') ||
+    (pathname.endsWith('/leitura-sync') && req.method === 'GET') ||
     PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p))
   ) {
     return NextResponse.next();

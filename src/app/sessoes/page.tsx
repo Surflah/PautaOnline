@@ -12,6 +12,7 @@ import {
   Trash2,
   CheckCircle2,
   Calendar,
+  BookOpen,
 } from 'lucide-react';
 
 interface SessaoItem {
@@ -258,6 +259,13 @@ export default function SessoesPage() {
                           >
                             <Printer className="w-3.5 h-3.5" />
                             <span>Roteiro A4</span>
+                          </Link>
+                          <Link
+                            href={`/sessoes/${s.id}/leitura`}
+                            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs font-bold transition-all"
+                          >
+                            <BookOpen className="w-3.5 h-3.5" />
+                            <span>Leitura IA</span>
                           </Link>
                           <Link
                             href={`/sessoes/${s.id}/deliberacao`}

@@ -1,0 +1,172 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Configuracao {
+  chave     String   @id
+  valor     String
+  updatedAt DateTime @updatedAt
+}
+
+model Vereador {
+  id           Int            @id @default(autoincrement())
+  nome         String
+  tratamento   String         @default("Vereador") // "Vereador" | "Vereadora"
+  isPresidente Boolean        @default(false)
+  isLicenciado Boolean        @default(false)
+  fotoUrl      String?
+  createdAt    DateTime       @default(now())
+  presencas    Presenca[]
+  votos        Voto[]
+  palavraLivre PalavraLivre[]
+}
+
+model Sessao {
+  id                Int            @id @default(autoincrement())
+  nome              String
+  tipo              String         @default("Ordinária")
+  saplSessaoId      Int?
+  dataSessao        DateTime       @default(now())
+  itemAtualId       Int?
+  status            String         @default("EM_ANDAMENTO") // RASCUNHO, EM_ANDAMENTO, ENCERRADA
+  pautaUpdatedAt    DateTime       @default(now())
+  leituraEstadoJson String?        // JSON de sincronização do teleprompter PDF
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  itens             PautaItem[]
+  presencas         Presenca[]
+  votos             Voto[]
+  palavraLivre      PalavraLivre[]
+}
+
+model PautaItem {
+  id                   Int        @id @default(autoincrement())
+  sessaoId             Int
+  sessao               Sessao     @relation(fields: [sessaoId], references: [id], onDelete: Cascade)
+  numero               Int
+  titulo               String
+  ementa               String     @default("")
+  tipoItem             String     @default("Proposição")
+  autor                String     @default("")
+  votacaoEtapa         String     @default("Primeira Votação") // "Primeira Votação" | "Segunda Votação" | "Única Votação" | "Não Votável"
+  votavel              Boolean    @default(true)
+  pdfUrl               String?
+  paginasRevisadasJson String?    // JSON array de { pagina, texto, pular, audio_url }
+  jaRevisado           Boolean    @default(false)
+  saplMateriaId        Int?
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
+  presencas            Presenca[]
+  votos                Voto[]
+
+  @@index([sessaoId, numero])
+}
+
+model Presenca {
+  id          Int       @id @default(autoincrement())
+  sessaoId    Int
+  sessao      Sessao    @relation(fields: [sessaoId], references: [id], onDelete: Cascade)
+  pautaItemId Int
+  pautaItem   PautaItem @relation(fields: [pautaItemId], references: [id], onDelete: Cascade)
+  vereadorId  Int
+  vereador    Vereador  @relation(fields: [vereadorId], references: [id], onDelete: Cascade)
+  status      String    @default("Presente") // "Presente" | "Ausente"
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([pautaItemId, vereadorId])
+}
+
+model Voto {
+  id          Int       @id @default(autoincrement())
+  sessaoId    Int
+  sessao      Sessao    @relation(fields: [sessaoId], references: [id], onDelete: Cascade)
+  pautaItemId Int
+  pautaItem   PautaItem @relation(fields: [pautaItemId], references: [id], onDelete: Cascade)
+  vereadorId  Int
+  vereador    Vereador  @relation(fields: [vereadorId], references: [id], onDelete: Cascade)
+  voto        String    // "Favorável" | "Contrário" | "Abstenção" | "Justificativa"
+  justificar  Boolean   @default(false)
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([pautaItemId, vereadorId])
+}
+
+model PalavraLivre {
+  id         Int      @id @default(autoincrement())
+  sessaoId   Int
+  sessao     Sessao   @relation(fields: [sessaoId], references: [id], onDelete: Cascade)
+  vereadorId Int
+  vereador   Vereador @relation(fields: [vereadorId], references: [id], onDelete: Cascade)
+  vaiFalar   Boolean  @default(true)
+  ordem      Int      @default(0)
+  status     String   @default("aguardando") // "aguardando" | "falando" | "concluido"
+  updatedAt  DateTime @updatedAt
+
+  @@unique([sessaoId, vereadorId])
+}
+
+model CerimonialEvento {
+  id                 Int                 @id @default(autoincrement())
+  nome               String
+  dataEvento         DateTime            @default(now())
+  status             String              @default("AGENDADO")
+  roteiroAtualOrdem  Int                 @default(1)
+  eleicaoCargoAtualId Int?
+  eleicaoStatus      String              @default("AGUARDANDO") // AGUARDANDO, CHAMADA, VOTACAO, ENCERRADA
+  eleicaoVereadorAtivoId Int?
+  gcLowerThirdJson   String?
+  createdAt          DateTime            @default(now())
+  pessoas            CerimonialPessoa[]
+  cargos             CerimonialCargo[]
+  roteiros           CerimonialRoteiro[]
+}
+
+model CerimonialPessoa {
+  id             Int                @id @default(autoincrement())
+  eventoId       Int
+  evento         CerimonialEvento   @relation(fields: [eventoId], references: [id], onDelete: Cascade)
+  nome           String
+  nomeartistico  String?
+  tratamento     String             @default("Vereador Mirim")
+  escola         String?
+  papel          String             @default("VEREADOR_MIRIM") // VEREADOR_MIRIM, MESA_PROVISORIA, AUTORIDADE
+  cargoMesa      String?            // PRESIDENTE_PROVISORIO, SECRETARIO_PROVISORIO
+  presente       Boolean            @default(false)
+  ordem          Int                @default(0)
+}
+
+model CerimonialCargo {
+  id        Int                @id @default(autoincrement())
+  eventoId  Int
+  evento    CerimonialEvento   @relation(fields: [eventoId], references: [id], onDelete: Cascade)
+  nome      String             // Presidente, Vice-Presidente, 1º Secretário, 2º Secretário
+  ordem     Int                @default(1)
+  eleitoId  Int?
+}
+
+model CerimonialRoteiro {
+  id         Int              @id @default(autoincrement())
+  eventoId   Int
+  evento     CerimonialEvento @relation(fields: [eventoId], references: [id], onDelete: Cascade)
+  ordem      Int
+  quemFala   String           // MESTRE_CERIMONIAS, PRESIDENTE, SECRETARIO, SISTEMA
+  titulo     String
+  textoFala  String
+  acaoSistema String?         // CHAMADA_POSSE, ELEICAO_MESA, ENCERRAMENTO
+}
+
+model AuditLog {
+  id         Int      @id @default(autoincrement())
+  usuario    String
+  acao       String
+  entidade   String
+  entidadeId String?
+  detalhes   String?
+  ip         String?
+  createdAt  DateTime @default(now())
+}

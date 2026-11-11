@@ -11,7 +11,7 @@ const jakarta = Plus_Jakarta_Sans({
 export const metadata: Metadata = {
   title: 'PautaOnline — Câmara Municipal de Itapoá',
   description:
-    'Sistema Institucional de Gestão de Pautas, Deliberação em Plenário, Leitura Automatizada com IA e Cerimonial — Câmara Municipal de Itapoá-SC',
+    'Sistema Institucional de Gestão de Pautas, Deliberação em Plenário e Leitura Automatizada com IA — Câmara Municipal de Itapoá-SC',
   manifest: '/manifest.json',
   icons: {
     icon: '/logo.png',

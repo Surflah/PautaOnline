@@ -21,6 +21,7 @@ import {
   Ban,
   ArrowLeft,
   AlertTriangle,
+  ListOrdered,
 } from 'lucide-react';
 
 interface PautaItemLeitura {
@@ -43,9 +44,44 @@ interface PaginaRoteiro {
   audio_url?: string | null;
 }
 
-interface AncoraTexto {
-  frac: number;
+interface PontoSincroniaAudio {
+  fracAudio: number;
+  fracTexto: number;
+}
+
+interface LinhaPdfAncorada {
+  numeroLinha: number;
   canvasY: number;
+  altura: number;
+  texto: string;
+  fracInicio: number;
+  fracFim: number;
+}
+
+interface VozNativaSistema {
+  name: string;
+  lang: string;
+}
+
+function normalizarTxt(s: string): string {
+  return (s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function probeWord(str: string): string | null {
+  const words = normalizarTxt(str).split(' ');
+  let best = '';
+  for (const w of words) {
+    if (w.length >= 4 && /[a-z]/.test(w) && w.length > best.length) {
+      best = w;
+    }
+  }
+  return best.length >= 4 ? best : null;
 }
 
 export default function PainelProLeituraPage() {
@@ -61,19 +97,27 @@ export default function PainelProLeituraPage() {
   const [sidebarAberta, setSidebarAberta] = useState(true);
   const [barraTopoVisivel, setBarraTopoVisivel] = useState(true);
 
-  // Parâmetros de Voz, Velocidade e Rolagem
-  const [vozTts, setVozTts] = useState('nova');
-  const [playbackRate, setPlaybackRate] = useState(1.15);
-  const [velocidadeScrollMult, setVelocidadeScrollMult] = useState(0.9); // 1.2 Lenta, 0.9 Normal, 0.7 Rápida, 0.5 Muito Rápida
+  // Vozes gratuitas selecionadas por padrão (Google Feminina Brasil)
+  const [vozTts, setVozTts] = useState('google-feminina');
+  const [vozesNativasPt, setVozesNativasPt] = useState<VozNativaSistema[]>([]);
+  const [playbackRate, setPlaybackRate] = useState(1.1);
+  const [velocidadeScrollMult, setVelocidadeScrollMult] = useState(1.0); // 1.0 = Sincronia exata com a fala
+  const [modoRolagem, setModoRolagem] = useState<'linha' | 'continuo'>('linha');
   const [volumeBoost, setVolumeBoost] = useState(1.7);
 
-  // Estado de Reprodução e Auto-Scroll
+  // Estado de Reprodução e Auto-Scroll Linha a Linha
   const [isPlaying, setIsPlaying] = useState(false);
   const [gerandoAudio, setGerandoAudio] = useState(false);
   const [progressoAudioPct, setProgressoAudioPct] = useState(0);
   const [rolagemManualAtiva, setRolagemManualAtiva] = useState(false);
   const [mostrarGcFlutuante, setMostrarGcFlutuante] = useState(false);
   const [statusFeedback, setStatusFeedback] = useState('');
+  const [linhaAtivaIdx, setLinhaAtivaIdx] = useState<number>(0);
+  const [totalLinhasPagina, setTotalLinhasPagina] = useState<number>(0);
+  const [canvasDim, setCanvasDim] = useState<{ width: number; height: number }>({
+    width: 0,
+    height: 0,
+  });
 
   // Modal de Preparação do Roteiro (<dialog>)
   const modalPrepRef = useRef<HTMLDialogElement | null>(null);
@@ -89,12 +133,61 @@ export default function PainelProLeituraPage() {
   const gainNodeRef = useRef<GainNode | null>(null);
   const sourceNodeConnectedRef = useRef(false);
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const pdfDocRef = useRef<any>(null);
-  const ancorasPaginaRef = useRef<AncoraTexto[]>([]);
+  // Cache de áudios e mapas de tempo por página/voz
+  const cacheAudioPaginasRef = useRef<
+    Record<
+      string,
+      {
+        audioUrl: string;
+        provedor: string;
+        vozUsada: string;
+        mapaTempo: PontoSincroniaAudio[];
+      }
+    >
+  >({});
+  const mapaTempoAtivoRef = useRef<PontoSincroniaAudio[]>([
+    { fracAudio: 0, fracTexto: 0 },
+    { fracAudio: 1, fracTexto: 1 },
+  ]);
+  const linhasPdfRef = useRef<LinhaPdfAncorada[]>([]);
   const pageContentBottomYRef = useRef<number>(0);
+  const fracFalaNativaRef = useRef<number>(0);
+  const usandoFalaNativaRef = useRef<boolean>(false);
 
   const paginaAtualObj = paginas[paginaIdx] || null;
+
+  // Garante detecção do PDF.js mesmo em navegação client-side
+  useEffect(() => {
+    const checkPdfJs = () => {
+      if (typeof window !== 'undefined' && window.pdfjsLib) {
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+          'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        setPdfjsPronto(true);
+        return true;
+      }
+      return false;
+    };
+    if (!checkPdfJs()) {
+      const timer = setInterval(() => {
+        if (checkPdfJs()) clearInterval(timer);
+      }, 250);
+      return () => clearInterval(timer);
+    }
+  }, []);
+
+  // Carrega vozes nativas em Português disponíveis no navegador/sistema operacional
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    const carregarVozesSistema = () => {
+      const todas = window.speechSynthesis.getVoices() || [];
+      const pt = todas
+        .filter((v) => v.lang.toLowerCase().startsWith('pt'))
+        .map((v) => ({ name: v.name, lang: v.lang }));
+      setVozesNativasPt(pt);
+    };
+    carregarVozesSistema();
+    window.speechSynthesis.onvoiceschanged = carregarVozesSistema;
+  }, []);
 
   // Carrega lista de itens da sessão
   useEffect(() => {
@@ -108,8 +201,8 @@ export default function PainelProLeituraPage() {
       const lista: PautaItemLeitura[] = data.itens || [];
       setItens(lista);
 
-      // Seleciona automaticamente o primeiro item que possui PDF (ou o 1º item da sessão)
-      const primeiroComPdf = lista.find((i) => Boolean(i.pdfUrl)) || lista[0] || null;
+      const primeiroComPdf =
+        lista.find((i) => Boolean(i.pdfUrl)) || lista[0] || null;
       if (primeiroComPdf) {
         selecionarItemParaLeitura(primeiroComPdf, false);
       }
@@ -118,13 +211,59 @@ export default function PainelProLeituraPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessaoId]);
 
+  const prepararAudioEmBackground = useCallback(
+    async (pautaId: number, pag: PaginaRoteiro, voz: string) => {
+      if (!pag || pag.pular || voz.startsWith('nativa:')) return null;
+      const chaveCache = `${pautaId}_${pag.pagina_real}_${voz}_${pag.texto.length}`;
+      if (cacheAudioPaginasRef.current[chaveCache]) {
+        return cacheAudioPaginasRef.current[chaveCache];
+      }
+
+      try {
+        const res = await fetch(`/api/sessoes/${sessaoId}/leitura`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            acao: 'gerar_audio',
+            pautaId,
+            pagina: pag.pagina_real,
+            texto: pag.texto,
+            voz,
+          }),
+        });
+        const data = await res.json();
+        if (res.ok && data.audioUrl) {
+          const entrada = {
+            audioUrl: data.audioUrl,
+            provedor: data.provedor || 'google',
+            vozUsada: data.vozUsada || voz,
+            mapaTempo: Array.isArray(data.mapaTempo)
+              ? data.mapaTempo
+              : [
+                  { fracAudio: 0, fracTexto: 0 },
+                  { fracAudio: 1, fracTexto: 1 },
+                ],
+          };
+          cacheAudioPaginasRef.current[chaveCache] = entrada;
+          return entrada;
+        }
+      } catch {
+        // Ignora erro de pré-carga
+      }
+      return null;
+    },
+    [sessaoId]
+  );
+
   const selecionarItemParaLeitura = useCallback(
     async (item: PautaItemLeitura, ignoreCache = false) => {
       pararAudio();
       setItemAtivo(item);
       setPaginaIdx(0);
+      setLinhaAtivaIdx(0);
       setRolagemManualAtiva(false);
       setProgressoAudioPct(0);
+      setStatusFeedback('Carregando documento e extraindo linhas para leitura...');
 
       const q = `/api/sessoes/${sessaoId}/leitura?pautaId=${item.id}${
         ignoreCache ? '&ignoreCache=1' : ''
@@ -137,15 +276,35 @@ export default function PainelProLeituraPage() {
         const primeiraNaoPulada = data.paginas.findIndex(
           (p: PaginaRoteiro) => !p.pular
         );
-        setPaginaIdx(primeiraNaoPulada >= 0 ? primeiraNaoPulada : 0);
+        const idxInicial = primeiraNaoPulada >= 0 ? primeiraNaoPulada : 0;
+        setPaginaIdx(idxInicial);
+        setStatusFeedback(
+          `Documento pronto (${data.paginas.length} pág.). Clique em "Ler Página" para iniciar.`
+        );
+
+        // Pré-gera imediatamente o áudio da 1ª página legível para início instantâneo
+        if (data.paginas[idxInicial]) {
+          prepararAudioEmBackground(
+            item.id,
+            data.paginas[idxInicial],
+            vozTts
+          );
+        }
       }
     },
-    [sessaoId]
+    [sessaoId, vozTts, prepararAudioEmBackground]
   );
 
-  // Renderiza a página do PDF e constrói as âncoras verticais do texto (Motor Ancorado)
+  // Pré-carrega áudio sempre que mudar de página ou de voz
   useEffect(() => {
-    async function renderizarPaginaPdfEConstruirAncoras() {
+    if (itemAtivo && paginaAtualObj && !paginaAtualObj.pular) {
+      prepararAudioEmBackground(itemAtivo.id, paginaAtualObj, vozTts);
+    }
+  }, [itemAtivo, paginaAtualObj, vozTts, prepararAudioEmBackground]);
+
+  // Renderiza a página do PDF e constrói as linhas ancoradas (Motor Linha a Linha)
+  useEffect(() => {
+    async function renderizarPaginaPdfEConstruirLinhas() {
       if (
         !pdfjsPronto ||
         !window.pdfjsLib ||
@@ -157,9 +316,12 @@ export default function PainelProLeituraPage() {
       }
 
       try {
-        const loadingTask = window.pdfjsLib.getDocument(itemAtivo.pdfUrl);
+        const urlPdfResolvida = itemAtivo.pdfUrl.replace(
+          /^\/uploads\//,
+          '/api/arquivos/'
+        );
+        const loadingTask = window.pdfjsLib.getDocument(urlPdfResolvida);
         const pdfDoc = await loadingTask.promise;
-        pdfDocRef.current = pdfDoc;
 
         const numPag = Math.min(
           Math.max(1, paginaAtualObj.pagina_real),
@@ -167,76 +329,180 @@ export default function PainelProLeituraPage() {
         );
         const page = await pdfDoc.getPage(numPag);
 
-        const containerWidth = viewportContainerRef.current?.clientWidth || 1000;
+        const containerWidth =
+          viewportContainerRef.current?.clientWidth || 1000;
         const unscaled = page.getViewport({ scale: 1 });
-        const scale = Math.min(2.0, (containerWidth * 0.88) / unscaled.width);
+        // Preenche a largura útil do container para que a página tenha bastante altura vertical de rolagem
+        const larguraAlvo = Math.max(720, Math.min(1120, containerWidth - 48));
+        const scale = larguraAlvo / unscaled.width;
         const viewport = page.getViewport({ scale });
 
         const canvas = canvasRef.current;
         canvas.width = viewport.width;
         canvas.height = viewport.height;
+        setCanvasDim({ width: viewport.width, height: viewport.height });
+
         const ctx = canvas.getContext('2d');
         if (ctx) {
           await page.render({ canvasContext: ctx, viewport }).promise;
         }
 
-        // Extrai coordenadas reais do texto da página para rolagem ancorada
-        const textContent = await page.getTextContent();
-        const rawItems = textContent.items || [];
+        // Extrai itens de texto do PDF com coordenadas exatas no canvas
+        const tc = await page.getTextContent();
+        const SIG_RE =
+          /assinado\s+digitalmente|documento\s+assinado|icp[-\s]?brasil|autenticidade\s+e\s+integridade|\/verificador|\bverificador\b|\[assinado/i;
 
-        const linhasExtraidas: { canvasY: number; palavras: string[] }[] = [];
-        let maxContentY = viewport.height * 0.85;
+        interface RawPdfItem {
+          x: number;
+          y: number;
+          altura: number;
+          str: string;
+          sig: boolean;
+        }
 
-        for (const it of rawItems) {
-          const str = String(it.str || '').trim();
-          if (!str) continue;
+        const raw: RawPdfItem[] = [];
+        for (const it of tc.items || []) {
+          const s = String(it.str || '');
+          if (!s.trim()) continue;
+          const tx = window.pdfjsLib.Util.transform(
+            viewport.transform,
+            it.transform
+          );
+          // Ignora texto vertical na margem
+          if (Math.abs(tx[1]) > Math.abs(tx[0])) continue;
+          const altura = Math.max(14, Math.hypot(tx[2], tx[3]) || 18);
+          raw.push({
+            x: tx[4],
+            y: tx[5],
+            altura,
+            str: s,
+            sig: SIG_RE.test(s),
+          });
+        }
 
-          // Ignora blocos após marcadores de assinatura digital ICP-Brasil
-          if (/assinado digitalmente|código verificador|icp-brasil/i.test(str)) {
-            break;
-          }
-
-          // Transformação de coordenada PDF (origem embaixo) para Canvas Y (origem no topo)
-          const pdfY = it.transform ? Number(it.transform[5]) : 0;
-          const [, canvasY] = viewport.convertToViewportPoint(0, pdfY);
-
-          const pals = str
-            .toLowerCase()
-            .replace(/[^a-záàâãéêíóôõúç0-9\s]/gi, '')
-            .split(/\s+/)
-            .filter((w) => w.length >= 4);
-
-          if (pals.length > 0) {
-            linhasExtraidas.push({ canvasY, palavras: pals });
-            if (canvasY > maxContentY && canvasY < viewport.height * 0.96) {
-              maxContentY = canvasY;
-            }
+        // Remove blocos de assinatura digital no final da página
+        const sigYs = raw.filter((r) => r.sig).map((r) => r.y);
+        if (sigYs.length > 0) {
+          const cutoff = Math.min(...sigYs);
+          for (let i = raw.length - 1; i >= 0; i--) {
+            if (raw[i].y >= cutoff - 2) raw.splice(i, 1);
           }
         }
 
-        pageContentBottomYRef.current = maxContentY;
+        // Ordena de cima para baixo (e da esquerda para a direita na mesma linha)
+        raw.sort((a, b) => {
+          if (Math.abs(a.y - b.y) <= 6) return a.x - b.x;
+          return a.y - b.y;
+        });
 
-        // Casa palavras-marco com o texto revisado da página para criar âncoras monotônicas
-        const textoFalado = (paginaAtualObj.texto || '').toLowerCase();
-        const totalChars = Math.max(1, textoFalado.length);
-        const ancoras: AncoraTexto[] = [{ frac: 0, canvasY: 0 }];
-        let buscaOffset = 0;
-        let ultimoY = 0;
+        // Agrupa itens na mesma coordenada Y em LINHAS VISUAIS DO PDF
+        const linhasAgrupadas: {
+          y: number;
+          altura: number;
+          partes: string[];
+        }[] = [];
 
-        for (const linha of linhasExtraidas) {
-          const palavraChave = linha.palavras[0];
-          const pos = textoFalado.indexOf(palavraChave, buscaOffset);
-          if (pos !== -1 && pos - buscaOffset < 400) {
-            const frac = Math.min(1, pos / totalChars);
-            const yMonotonico = Math.max(ultimoY, linha.canvasY);
-            ancoras.push({ frac, canvasY: yMonotonico });
-            ultimoY = yMonotonico;
-            buscaOffset = pos + palavraChave.length;
+        for (const r of raw) {
+          const ultima = linhasAgrupadas[linhasAgrupadas.length - 1];
+          if (ultima && Math.abs(r.y - ultima.y) <= 7) {
+            ultima.partes.push(r.str.trim());
+            ultima.altura = Math.max(ultima.altura, r.altura);
+          } else {
+            linhasAgrupadas.push({
+              y: r.y,
+              altura: r.altura,
+              partes: [r.str.trim()],
+            });
           }
         }
 
-        ancoras.push({ frac: 1, canvasY: maxContentY });
-        ancorasPaginaRef.current = ancoras;
+        if (linhasAgrupadas.length === 0) {
+          linhasPdfRef.current = [];
+          setTotalLinhasPagina(0);
+          return;
+        }
+
+        pageContentBottomYRef.current =
+          linhasAgrupadas[linhasAgrupadas.length - 1].y;
+        const yMin = linhasAgrupadas[0].y;
+        const ySpan = Math.max(1, pageContentBottomYRef.current - yMin);
+
+        // Casa cada linha do PDF com o texto falado (ou distribui proporcionalmente aos caracteres da linha)
+        const textoFaladoNorm = normalizarTxt(paginaAtualObj.texto || '');
+        const ancorasPorLinha: (number | null)[] = new Array(
+          linhasAgrupadas.length
+        ).fill(null);
+
+        if (textoFaladoNorm.length > 30) {
+          let cursor = 0;
+          for (let i = 0; i < linhasAgrupadas.length; i++) {
+            const textoLinha = linhasAgrupadas[i].partes.join(' ');
+            const probe = probeWord(textoLinha);
+            if (!probe) continue;
+            const idx = textoFaladoNorm.indexOf(probe, cursor);
+            if (idx === -1) continue;
+            const frac = idx / textoFaladoNorm.length;
+            const yFrac = (linhasAgrupadas[i].y - yMin) / ySpan;
+            if (frac - yFrac > 0.35) continue;
+            cursor = idx + probe.length;
+            ancorasPorLinha[i] = frac;
+          }
+        }
+
+        // Preenche frações monotônicas para TODAS as linhas da página (0..N-1)
+        const tamanhos = linhasAgrupadas.map((l) =>
+          Math.max(4, l.partes.join(' ').length)
+        );
+        const totalCharsLinhas = Math.max(
+          1,
+          tamanhos.reduce((a, b) => a + b, 0)
+        );
+
+        let acum = 0;
+        const linhasFinais: LinhaPdfAncorada[] = [];
+        for (let i = 0; i < linhasAgrupadas.length; i++) {
+          const fracCharInicio = acum / totalCharsLinhas;
+          acum += tamanhos[i];
+          const fracCharFim = acum / totalCharsLinhas;
+
+          // Combina âncora exata do texto falado com a proporção de caracteres da linha
+          const fracAncora = ancorasPorLinha[i];
+          const fracInicio =
+            fracAncora !== null
+              ? fracAncora * 0.7 + fracCharInicio * 0.3
+              : fracCharInicio;
+
+          linhasFinais.push({
+            numeroLinha: i + 1,
+            canvasY: linhasAgrupadas[i].y,
+            altura: linhasAgrupadas[i].altura,
+            texto: linhasAgrupadas[i].partes.join(' '),
+            fracInicio,
+            fracFim: fracCharFim,
+          });
+        }
+
+        // Garante monotonicidade estrita entre linhas consecutivas
+        for (let i = 0; i < linhasFinais.length; i++) {
+          if (i === 0) {
+            linhasFinais[i].fracInicio = 0;
+          } else {
+            linhasFinais[i].fracInicio = Math.max(
+              linhasFinais[i - 1].fracInicio + 0.002,
+              Math.min(0.99, linhasFinais[i].fracInicio)
+            );
+          }
+        }
+        for (let i = 0; i < linhasFinais.length; i++) {
+          linhasFinais[i].fracFim =
+            i < linhasFinais.length - 1
+              ? linhasFinais[i + 1].fracInicio
+              : 1.0;
+        }
+
+        linhasPdfRef.current = linhasFinais;
+        setTotalLinhasPagina(linhasFinais.length);
+        setLinhaAtivaIdx(0);
 
         if (viewportContainerRef.current) {
           viewportContainerRef.current.scrollTop = 0;
@@ -246,7 +512,7 @@ export default function PainelProLeituraPage() {
       }
     }
 
-    renderizarPaginaPdfEConstruirAncoras();
+    renderizarPaginaPdfEConstruirLinhas();
   }, [pdfjsPronto, itemAtivo?.pdfUrl, paginaAtualObj]);
 
   // Configura Web Audio API GainNode para amplificação limpa de voz em plenário
@@ -264,7 +530,9 @@ export default function PainelProLeituraPage() {
         audioCtxRef.current.resume();
       }
       if (!sourceNodeConnectedRef.current) {
-        const source = audioCtxRef.current.createMediaElementSource(audioRef.current);
+        const source = audioCtxRef.current.createMediaElementSource(
+          audioRef.current
+        );
         const gain = audioCtxRef.current.createGain();
         gain.gain.value = volumeBoost;
         source.connect(gain);
@@ -291,78 +559,170 @@ export default function PainelProLeituraPage() {
     }
   }, [playbackRate]);
 
-  // Auto-oculta barra superior após 2.5s de leitura e exibe GC flutuante após 3s
+  // Auto-oculta barra superior após 3s de leitura e exibe GC flutuante
   useEffect(() => {
     if (!isPlaying) {
       setBarraTopoVisivel(true);
       setMostrarGcFlutuante(false);
       return;
     }
-    const t1 = setTimeout(() => setBarraTopoVisivel(false), 2500);
-    const t2 = setTimeout(() => setMostrarGcFlutuante(true), 3000);
+    const t1 = setTimeout(() => setBarraTopoVisivel(false), 3000);
+    const t2 = setTimeout(() => setMostrarGcFlutuante(true), 2500);
     return () => {
       clearTimeout(t1);
       clearTimeout(t2);
     };
   }, [isPlaying]);
 
-  // Motor de Auto-Scroll sincronizado com o tempo do áudio TTS
+  // Converte o progresso bruto do áudio (0..1) na fração real do texto usando o mapa de blocos do Google TTS
+  const converterAudioParaFracTexto = useCallback((progAudio: number): number => {
+    const mapa = mapaTempoAtivoRef.current;
+    if (!mapa || mapa.length < 2) return progAudio;
+    if (progAudio <= mapa[0].fracAudio) return mapa[0].fracTexto;
+    const ult = mapa[mapa.length - 1];
+    if (progAudio >= ult.fracAudio) return ult.fracTexto;
+
+    for (let i = 1; i < mapa.length; i++) {
+      if (progAudio <= mapa[i].fracAudio) {
+        const a0 = mapa[i - 1];
+        const a1 = mapa[i];
+        const span = Math.max(0.0001, a1.fracAudio - a0.fracAudio);
+        const t = (progAudio - a0.fracAudio) / span;
+        return a0.fracTexto + t * (a1.fracTexto - a0.fracTexto);
+      }
+    }
+    return progAudio;
+  }, []);
+
+  // Calcula a linha ativa do PDF e o alvo de scroll para o instante atual da leitura
+  const calcularAlvoELinhaAtiva = useCallback(() => {
+    const container = viewportContainerRef.current;
+    if (!container) return null;
+
+    let progBruto = 0;
+    if (usandoFalaNativaRef.current) {
+      progBruto = fracFalaNativaRef.current;
+    } else {
+      const audio = audioRef.current;
+      if (!audio || !audio.duration || audio.paused) return null;
+      progBruto = Math.min(1, Math.max(0, audio.currentTime / audio.duration));
+    }
+
+    const fracTextoReal = usandoFalaNativaRef.current
+      ? progBruto
+      : converterAudioParaFracTexto(progBruto);
+
+    const f = Math.min(
+      1,
+      Math.max(0, fracTextoReal / (velocidadeScrollMult || 1))
+    );
+
+    const linhas = linhasPdfRef.current;
+    if (linhas.length === 0) {
+      const maxScroll = Math.max(
+        0,
+        container.scrollHeight - container.clientHeight
+      );
+      return {
+        pct: Math.round(progBruto * 100),
+        idxLinha: 0,
+        scrollDesejado: f * maxScroll,
+      };
+    }
+
+    // Localiza exatamente qual linha do PDF está sendo lida neste instante
+    let idxLinha = 0;
+    for (let i = 0; i < linhas.length; i++) {
+      if (f >= linhas[i].fracInicio && f <= linhas[i].fracFim) {
+        idxLinha = i;
+        break;
+      }
+      if (f > linhas[i].fracFim) {
+        idxLinha = i;
+      }
+    }
+
+    const linhaAtual = linhas[idxLinha];
+    let yAlvoCanvas = linhaAtual.canvasY;
+
+    if (modoRolagem === 'continuo' && idxLinha < linhas.length - 1) {
+      const proxLinha = linhas[idxLinha + 1];
+      const spanLinha = Math.max(
+        0.001,
+        linhaAtual.fracFim - linhaAtual.fracInicio
+      );
+      const tLinha = Math.min(
+        1,
+        Math.max(0, (f - linhaAtual.fracInicio) / spanLinha)
+      );
+      yAlvoCanvas =
+        linhaAtual.canvasY + tLinha * (proxLinha.canvasY - linhaAtual.canvasY);
+    }
+
+    // Posiciona a linha falada na zona de foco ocular (~36% do topo da área de leitura)
+    const linhaLeituraOffset = container.clientHeight * 0.36;
+    const maxScroll = Math.max(
+      0,
+      container.scrollHeight - container.clientHeight
+    );
+    // Soma o padding superior do container (24px)
+    const scrollDesejado = Math.max(
+      0,
+      Math.min(maxScroll, yAlvoCanvas + 24 - linhaLeituraOffset)
+    );
+
+    return {
+      pct: Math.round(progBruto * 100),
+      idxLinha,
+      scrollDesejado,
+    };
+  }, [converterAudioParaFracTexto, velocidadeScrollMult, modoRolagem]);
+
+  // Motor Principal de Auto-Scroll Linha a Linha (60fps + Timer em 2º plano)
   useEffect(() => {
     if (!isPlaying) return;
 
     let rafId: number;
-    const atualizarScrollPorAudio = () => {
-      const audio = audioRef.current;
+    const loopScroll = () => {
       const container = viewportContainerRef.current;
-      if (
-        audio &&
-        container &&
-        !rolagemManualAtiva &&
-        audio.duration > 0 &&
-        !audio.paused
-      ) {
-        const fracTempo = Math.min(1, Math.max(0, audio.currentTime / audio.duration));
-        setProgressoAudioPct(Math.round(fracTempo * 100));
+      const calc = calcularAlvoELinhaAtiva();
+      if (container && calc) {
+        setProgressoAudioPct(calc.pct);
+        setLinhaAtivaIdx((prev) =>
+          prev !== calc.idxLinha ? calc.idxLinha : prev
+        );
 
-        // Interpola posição vertical nas âncoras do texto
-        const ancoras = ancorasPaginaRef.current;
-        let yAlvoCanvas = fracTempo * (pageContentBottomYRef.current || container.scrollHeight);
-
-        if (ancoras.length >= 2) {
-          for (let i = 0; i < ancoras.length - 1; i++) {
-            const a0 = ancoras[i];
-            const a1 = ancoras[i + 1];
-            if (fracTempo >= a0.frac && fracTempo <= a1.frac) {
-              const span = Math.max(0.0001, a1.frac - a0.frac);
-              const t = (fracTempo - a0.frac) / span;
-              yAlvoCanvas = a0.canvasY + t * (a1.canvasY - a0.canvasY);
-              break;
-            }
+        if (!rolagemManualAtiva) {
+          const diff = calc.scrollDesejado - container.scrollTop;
+          if (Math.abs(diff) < 0.5) {
+            container.scrollTop = calc.scrollDesejado;
+          } else {
+            // Salto suave linha a linha (easing 0.16)
+            container.scrollTop += diff * 0.16;
           }
         }
-
-        // Mantém a linha ativa de leitura a ~42% da altura útil do container
-        const linhaLeituraOffset = container.clientHeight * 0.42;
-        const maxScrollPossivel = Math.max(
-          0,
-          container.scrollHeight - container.clientHeight
-        );
-        const scrollDesejado = Math.min(
-          maxScrollPossivel,
-          Math.max(0, (yAlvoCanvas - linhaLeituraOffset) / velocidadeScrollMult)
-        );
-
-        const diff = scrollDesejado - container.scrollTop;
-        if (Math.abs(diff) > 0.5) {
-          container.scrollTop += diff * 0.08;
-        }
       }
-      rafId = requestAnimationFrame(atualizarScrollPorAudio);
+      rafId = requestAnimationFrame(loopScroll);
     };
 
-    rafId = requestAnimationFrame(atualizarScrollPorAudio);
-    return () => cancelAnimationFrame(rafId);
-  }, [isPlaying, rolagemManualAtiva, velocidadeScrollMult]);
+    rafId = requestAnimationFrame(loopScroll);
+
+    // Mantém rolagem ativa mesmo se a aba ficar em segundo plano (ex.: OBS / projeção)
+    const bgTimer = setInterval(() => {
+      if (document.hidden && !rolagemManualAtiva) {
+        const container = viewportContainerRef.current;
+        const calc = calcularAlvoELinhaAtiva();
+        if (container && calc) {
+          container.scrollTop = calc.scrollDesejado;
+        }
+      }
+    }, 250);
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      clearInterval(bgTimer);
+    };
+  }, [isPlaying, rolagemManualAtiva, calcularAlvoELinhaAtiva]);
 
   // Sincronização Master -> Slave a cada 500ms com o Telão de Leitura OBS
   useEffect(() => {
@@ -408,6 +768,10 @@ export default function PainelProLeituraPage() {
     if (audioRef.current) {
       audioRef.current.pause();
     }
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    usandoFalaNativaRef.current = false;
     setIsPlaying(false);
   }
 
@@ -416,7 +780,6 @@ export default function PainelProLeituraPage() {
     const pagObj = paginas[idxAlvo];
 
     if (pagObj.pular) {
-      // Pula automaticamente página marcada como "Não ler"
       if (idxAlvo + 1 < paginas.length) {
         setPaginaIdx(idxAlvo + 1);
         tocarPagina(idxAlvo + 1);
@@ -424,37 +787,73 @@ export default function PainelProLeituraPage() {
       return;
     }
 
+    setRolagemManualAtiva(false);
+
+    // Opção 1: Voz Nativa do Navegador/Sistema (Web Speech API com eventos de palavra em tempo real)
+    if (vozTts.startsWith('nativa:') && 'speechSynthesis' in window) {
+      pararAudio();
+      const nomeVoz = vozTts.replace(/^nativa:/, '');
+      const utter = new SpeechSynthesisUtterance(pagObj.texto);
+      const vozObj = window.speechSynthesis
+        .getVoices()
+        .find((v) => v.name === nomeVoz);
+      if (vozObj) utter.voice = vozObj;
+      utter.lang = vozObj?.lang || 'pt-BR';
+      utter.rate = playbackRate;
+
+      const totalLen = Math.max(1, pagObj.texto.length);
+      fracFalaNativaRef.current = 0;
+      usandoFalaNativaRef.current = true;
+
+      utter.onboundary = (ev) => {
+        if (typeof ev.charIndex === 'number') {
+          fracFalaNativaRef.current = Math.min(1, ev.charIndex / totalLen);
+        }
+      };
+      utter.onend = () => {
+        usandoFalaNativaRef.current = false;
+        handleAudioEnded();
+      };
+
+      setStatusFeedback(
+        `🔊 Lendo Pág. ${pagObj.pagina_real} — Voz Nativa (${nomeVoz})`
+      );
+      setIsPlaying(true);
+      window.speechSynthesis.speak(utter);
+      return;
+    }
+
+    // Opção 2: Vozes IA Servidor (Google Feminina Brasil Gratuita / OpenAI Neural)
+    usandoFalaNativaRef.current = false;
+    conectarGainNodeSeNecessario();
     setGerandoAudio(true);
-    setStatusFeedback(`Preparando voz para a Página ${pagObj.pagina_real}...`);
+    setStatusFeedback(
+      `⏳ Sintetizando voz para a Página ${pagObj.pagina_real}...`
+    );
 
     try {
-      const res = await fetch(`/api/sessoes/${sessaoId}/leitura`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          acao: 'gerar_audio',
-          pautaId: itemAtivo.id,
-          pagina: pagObj.pagina_real,
-          texto: pagObj.texto,
-          voz: vozTts,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.audioUrl) {
-        setStatusFeedback(data.error || 'Falha ao gerar áudio TTS.');
+      const dadosAudio = await prepararAudioEmBackground(
+        itemAtivo.id,
+        pagObj,
+        vozTts
+      );
+
+      if (!dadosAudio || !dadosAudio.audioUrl) {
+        setStatusFeedback('⚠️ Falha ao gerar áudio TTS para esta página.');
         setGerandoAudio(false);
         return;
       }
 
-      setStatusFeedback(
-        data.provedor === 'openai'
-          ? `🔊 Voz Neural OpenAI (${vozTts})`
-          : '🔊 Voz Google Português (Ativa)'
-      );
+      mapaTempoAtivoRef.current = dadosAudio.mapaTempo;
+
+      const labelProvedor =
+        dadosAudio.provedor === 'openai'
+          ? `🔊 Voz Neural OpenAI (${dadosAudio.vozUsada}) — Pág. ${pagObj.pagina_real}`
+          : `🔊 Voz Google Feminina (${dadosAudio.vozUsada}) — Pág. ${pagObj.pagina_real} (Rolagem Linha a Linha Ativa)`;
+      setStatusFeedback(labelProvedor);
 
       if (audioRef.current) {
-        conectarGainNodeSeNecessario();
-        audioRef.current.src = data.audioUrl;
+        audioRef.current.src = dadosAudio.audioUrl;
         audioRef.current.playbackRate = playbackRate;
         await audioRef.current.play();
         setIsPlaying(true);
@@ -463,30 +862,30 @@ export default function PainelProLeituraPage() {
       // Pré-carrega em background o áudio da próxima página legível
       const proxIdx = paginas.findIndex((p, i) => i > idxAlvo && !p.pular);
       if (proxIdx !== -1) {
-        const proxPag = paginas[proxIdx];
-        fetch(`/api/sessoes/${sessaoId}/leitura`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            acao: 'gerar_audio',
-            pautaId: itemAtivo.id,
-            pagina: proxPag.pagina_real,
-            texto: proxPag.texto,
-            voz: vozTts,
-          }),
-        }).catch(() => {});
+        prepararAudioEmBackground(itemAtivo.id, paginas[proxIdx], vozTts);
       }
+    } catch (err) {
+      console.error('Erro ao reproduzir áudio:', err);
+      setStatusFeedback(
+        '⚠️ Clique novamente em "Ler Página" para liberar o áudio no navegador.'
+      );
     } finally {
       setGerandoAudio(false);
     }
   }
 
   function handlePlayPause() {
-    if (!audioRef.current) return;
     if (isPlaying) {
-      audioRef.current.pause();
-      setIsPlaying(false);
-    } else if (audioRef.current.src && audioRef.current.currentTime > 0 && !audioRef.current.ended) {
+      pararAudio();
+      return;
+    }
+    if (
+      !vozTts.startsWith('nativa:') &&
+      audioRef.current &&
+      audioRef.current.src &&
+      audioRef.current.currentTime > 0 &&
+      !audioRef.current.ended
+    ) {
       conectarGainNodeSeNecessario();
       audioRef.current.play();
       setIsPlaying(true);
@@ -497,12 +896,12 @@ export default function PainelProLeituraPage() {
 
   function handleAudioEnded() {
     setIsPlaying(false);
-    // Avança automaticamente para a próxima página não marcada para pular
     const proxIdx = paginas.findIndex((p, i) => i > paginaIdx && !p.pular);
     if (proxIdx !== -1) {
       setPaginaIdx(proxIdx);
+      setLinhaAtivaIdx(0);
       setRolagemManualAtiva(false);
-      setTimeout(() => tocarPagina(proxIdx), 400);
+      setTimeout(() => tocarPagina(proxIdx), 350);
     } else {
       setStatusFeedback('✅ Leitura do documento concluída!');
     }
@@ -557,9 +956,12 @@ export default function PainelProLeituraPage() {
         }),
       });
       if (res.ok) {
+        cacheAudioPaginasRef.current = {};
         setPaginas(paginasEdicao);
         setItens((prev) =>
-          prev.map((i) => (i.id === itemAtivo.id ? { ...i, jaRevisado: true } : i))
+          prev.map((i) =>
+            i.id === itemAtivo.id ? { ...i, jaRevisado: true } : i
+          )
         );
         modalPrepRef.current?.close();
         const primeiraValida = paginasEdicao.findIndex((p) => !p.pular);
@@ -580,6 +982,8 @@ export default function PainelProLeituraPage() {
     }
   }
 
+  const linhaAtivaObj = linhasPdfRef.current[linhaAtivaIdx] || null;
+
   return (
     <div
       onMouseMove={() => {
@@ -599,12 +1003,7 @@ export default function PainelProLeituraPage() {
         }}
       />
 
-      <audio
-        ref={audioRef}
-        onEnded={handleAudioEnded}
-        crossOrigin="anonymous"
-        className="hidden"
-      />
+      <audio ref={audioRef} onEnded={handleAudioEnded} className="hidden" />
 
       {/* Barra Lateral Retrátil de Itens da Pauta */}
       <aside
@@ -641,11 +1040,14 @@ export default function PainelProLeituraPage() {
             const ativo = itemAtivo?.id === it.id;
             let corBadge = 'bg-slate-700 text-slate-300';
             if (it.votacaoEtapa === 'Única Votação')
-              corBadge = 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
+              corBadge =
+                'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
             else if (it.votacaoEtapa === 'Primeira Votação')
-              corBadge = 'bg-blue-500/20 text-blue-300 border border-blue-500/30';
+              corBadge =
+                'bg-blue-500/20 text-blue-300 border border-blue-500/30';
             else if (it.votacaoEtapa === 'Segunda Votação')
-              corBadge = 'bg-amber-500/20 text-amber-300 border border-amber-500/30';
+              corBadge =
+                'bg-amber-500/20 text-amber-300 border border-amber-500/30';
 
             return (
               <button
@@ -663,12 +1065,19 @@ export default function PainelProLeituraPage() {
                     Item #{it.numero}
                   </span>
                   <div className="flex items-center gap-1">
+                    {it.pdfUrl && (
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300">
+                        📄 PDF
+                      </span>
+                    )}
                     {it.jaRevisado && (
                       <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300">
                         ✨ IA
                       </span>
                     )}
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${corBadge}`}>
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${corBadge}`}
+                    >
                       {it.votavel ? it.votacaoEtapa : 'Rito'}
                     </span>
                   </div>
@@ -739,7 +1148,7 @@ export default function PainelProLeituraPage() {
                 ) : (
                   <>
                     <Play className="w-4 h-4" />
-                    <span>{gerandoAudio ? 'Gerando...' : 'Ler Página'}</span>
+                    <span>{gerandoAudio ? 'Gerando Voz...' : 'Ler Página'}</span>
                   </>
                 )}
               </button>
@@ -763,22 +1172,51 @@ export default function PainelProLeituraPage() {
             </div>
           </div>
 
-          {/* Seletores de Voz, Velocidade, Rolagem e Ganho */}
+          {/* Seletores de Voz (Gratuitas Feminina Padrão + Sistema + OpenAI), Velocidade, Rolagem e Ganho */}
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <select
               aria-label="Selecionar Voz TTS"
               value={vozTts}
-              onChange={(e) => setVozTts(e.target.value)}
-              className="px-2.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-100 font-bold"
+              onChange={(e) => {
+                pararAudio();
+                setVozTts(e.target.value);
+              }}
+              className="px-2.5 py-2 rounded-xl bg-slate-800 border border-emerald-500/40 text-slate-100 font-bold max-w-[270px]"
             >
-              <option value="nova">🎙️ Voz: Nova (OpenAI)</option>
-              <option value="shimmer">🎙️ Voz: Shimmer (OpenAI)</option>
-              <option value="coral">🎙️ Voz: Coral (OpenAI)</option>
-              <option value="sage">🎙️ Voz: Sage (OpenAI)</option>
-              <option value="onyx">🎙️ Voz: Onyx (OpenAI)</option>
-              <option value="echo">🎙️ Voz: Echo (OpenAI)</option>
-              <option value="alloy">🎙️ Voz: Alloy (OpenAI)</option>
-              <option value="google">🌐 Voz: Google pt-BR</option>
+              <optgroup label="🆓 Vozes Gratuitas Google IA (Sem Chave)">
+                <option value="google-feminina">
+                  🌐 Google Feminina Brasil (Fluida — Padrão)
+                </option>
+                <option value="google-solene">
+                  🌐 Google Feminina Brasil (Cadência Solene)
+                </option>
+                <option value="google-clara">
+                  🌐 Google Feminina Brasil (Clara GTX)
+                </option>
+                <option value="google-pt">
+                  🌐 Google Feminina Clássica (Português)
+                </option>
+              </optgroup>
+
+              {vozesNativasPt.length > 0 && (
+                <optgroup label="🆓 Vozes Gratuitas do Sistema / Navegador (pt-BR)">
+                  {vozesNativasPt.map((v) => (
+                    <option key={v.name} value={`nativa:${v.name}`}>
+                      🗣️ {v.name} ({v.lang})
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+
+              <optgroup label="🔑 Vozes OpenAI Neural (Requer Chave API)">
+                <option value="nova">✨ Nova (Feminina Dinâmica)</option>
+                <option value="shimmer">✨ Shimmer (Feminina Clara)</option>
+                <option value="coral">✨ Coral (Feminina Expressiva)</option>
+                <option value="sage">✨ Sage (Feminina Institucional)</option>
+                <option value="onyx">✨ Onyx (Masculina Grave)</option>
+                <option value="echo">✨ Echo (Masculina Suave)</option>
+                <option value="alloy">✨ Alloy (Neutra)</option>
+              </optgroup>
             </select>
 
             <select
@@ -787,24 +1225,37 @@ export default function PainelProLeituraPage() {
               onChange={(e) => setPlaybackRate(Number(e.target.value))}
               className="px-2.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-100 font-bold tabular-nums"
             >
-              <option value={0.9}>Fala: 0.90x</option>
+              <option value={0.95}>Fala: 0.95x</option>
               <option value={1.0}>Fala: 1.00x</option>
-              <option value={1.1}>Fala: 1.10x</option>
+              <option value={1.1}>Fala: 1.10x (Padrão)</option>
               <option value={1.15}>Fala: 1.15x</option>
               <option value={1.2}>Fala: 1.20x</option>
-              <option value={1.25}>Fala: 1.25x (Padrão)</option>
+              <option value={1.25}>Fala: 1.25x</option>
             </select>
 
             <select
-              aria-label="Velocidade de Rolagem"
+              aria-label="Modo de Rolagem"
+              value={modoRolagem}
+              onChange={(e) =>
+                setModoRolagem(e.target.value as 'linha' | 'continuo')
+              }
+              className="px-2.5 py-2 rounded-xl bg-slate-800 border border-blue-500/40 text-blue-200 font-bold"
+              title="Escolha entre pular linha por linha conforme a leitura ou rolagem contínua"
+            >
+              <option value="linha">📑 Rolagem: Pular Linha a Linha</option>
+              <option value="continuo">🌊 Rolagem: Contínua Suave</option>
+            </select>
+
+            <select
+              aria-label="Ajuste Fino de Rolagem"
               value={velocidadeScrollMult}
               onChange={(e) => setVelocidadeScrollMult(Number(e.target.value))}
               className="px-2.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-100 font-bold"
             >
-              <option value={1.2}>Rolagem: Lenta</option>
-              <option value={0.9}>Rolagem: Normal</option>
-              <option value={0.7}>Rolagem: Rápida</option>
-              <option value={0.5}>Rolagem: Muito Rápida</option>
+              <option value={1.12}>Sincronia: -12% (Mais Lenta)</option>
+              <option value={1.0}>Sincronia: 100% (Exata)</option>
+              <option value={0.9}>Sincronia: +10% (Adiantada)</option>
+              <option value={0.8}>Sincronia: +20% (Rápida)</option>
             </select>
 
             <div className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-800 border border-slate-700">
@@ -853,11 +1304,13 @@ export default function PainelProLeituraPage() {
           </div>
         </header>
 
-        {/* GC Flutuante ("Em Leitura") */}
+        {/* GC Flutuante ("Em Leitura" + Linha Atual) */}
         {mostrarGcFlutuante && itemAtivo && (
           <div className="fixed top-20 left-8 z-40 bg-white/95 text-slate-900 border-l-8 border-blue-700 rounded-xl shadow-2xl px-5 py-3 max-w-md pointer-events-none animate-in fade-in slide-in-from-left-6 duration-500">
             <p className="text-[11px] font-black uppercase tracking-widest text-blue-700">
-              🔊 Em Leitura — Pág. {paginaAtualObj?.pagina_real || 1} ({progressoAudioPct}%)
+              🔊 Em Leitura — Pág. {paginaAtualObj?.pagina_real || 1} • Linha{' '}
+              {Math.min(linhaAtivaIdx + 1, Math.max(1, totalLinhasPagina))}/
+              {Math.max(1, totalLinhasPagina)} ({progressoAudioPct}%)
             </p>
             <p className="text-sm font-extrabold truncate">{itemAtivo.titulo}</p>
           </div>
@@ -878,7 +1331,8 @@ export default function PainelProLeituraPage() {
           </div>
         )}
 
-        {/* Área Central de Exibição do Documento PDF ou Teleprompter Texto */}
+        {/* Área Central de Exibição do Documento PDF com Guia Visual Linha a Linha */}
+        {/* IMPORTANTE: display block (sem flex-col) para nunca comprimir a altura do canvas e garantir scroll completo */}
         <div
           ref={viewportContainerRef}
           onWheel={() => {
@@ -887,21 +1341,53 @@ export default function PainelProLeituraPage() {
           onTouchMove={() => {
             if (isPlaying) setRolagemManualAtiva(true);
           }}
-          className="flex-1 overflow-y-auto p-6 flex flex-col items-center relative"
+          className="flex-1 overflow-y-auto px-6 pt-6 pb-[55vh] block relative"
         >
           {statusFeedback && (
-            <div className="mb-4 px-4 py-1.5 rounded-full bg-slate-800/90 border border-slate-700 text-xs font-bold text-blue-300">
-              {statusFeedback}
+            <div className="max-w-3xl mx-auto mb-4 px-4 py-2 rounded-full bg-slate-800/95 border border-slate-700 text-xs font-bold text-blue-300 flex items-center justify-between gap-3 shadow-md">
+              <span className="truncate">{statusFeedback}</span>
+              {totalLinhasPagina > 0 && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0 tabular-nums">
+                  <ListOrdered className="w-3.5 h-3.5" />
+                  <span>
+                    Linha {Math.min(linhaAtivaIdx + 1, totalLinhasPagina)} de{' '}
+                    {totalLinhasPagina} ({progressoAudioPct}%)
+                  </span>
+                </span>
+              )}
             </div>
           )}
 
           {itemAtivo?.pdfUrl ? (
-            <canvas
-              ref={canvasRef}
-              className="block mx-auto shadow-2xl rounded-xl bg-white"
-            />
+            <div
+              className="relative mx-auto shadow-2xl rounded-xl overflow-hidden bg-white"
+              style={{
+                width: canvasDim.width > 0 ? `${canvasDim.width}px` : 'auto',
+                height: canvasDim.height > 0 ? `${canvasDim.height}px` : 'auto',
+              }}
+            >
+              <canvas ref={canvasRef} className="block" />
+
+              {/* Marcador Visual da Linha Ativa em Leitura (Pula linha a linha sincronizado com a voz) */}
+              {linhaAtivaObj && (
+                <div
+                  style={{
+                    top: `${Math.max(
+                      0,
+                      linhaAtivaObj.canvasY - linhaAtivaObj.altura * 0.85
+                    )}px`,
+                    height: `${Math.max(24, linhaAtivaObj.altura * 1.4)}px`,
+                  }}
+                  className="absolute left-0 right-0 pointer-events-none transition-all duration-200 bg-amber-300/30 border-l-[6px] border-blue-600 shadow-sm flex items-center justify-end pr-3"
+                >
+                  <span className="px-2 py-0.5 rounded bg-blue-700/90 text-white text-[10px] font-black uppercase tracking-wider shadow">
+                    Linha {linhaAtivaObj.numeroLinha}
+                  </span>
+                </div>
+              )}
+            </div>
           ) : (
-            <div className="max-w-3xl w-full bg-slate-900 border border-slate-800 rounded-3xl p-8 sm:p-12 space-y-6 my-auto">
+            <div className="max-w-3xl mx-auto w-full bg-slate-900 border border-slate-800 rounded-3xl p-8 sm:p-12 space-y-6 my-8">
               <div className="flex items-center gap-2 text-blue-400 text-xs font-bold uppercase">
                 <FileText className="w-4 h-4" />
                 <span>Texto do Roteiro (Item sem PDF anexado)</span>
@@ -926,15 +1412,21 @@ export default function PainelProLeituraPage() {
         }}
         className="rounded-3xl p-0 backdrop:bg-slate-950/75 shadow-2xl border border-slate-700 bg-slate-900 text-slate-100 w-full max-w-4xl m-auto"
       >
-        <form onSubmit={handleSalvarEGerarAudiosModal} className="p-6 sm:p-8 space-y-5">
+        <form
+          onSubmit={handleSalvarEGerarAudiosModal}
+          className="p-6 sm:p-8 space-y-5"
+        >
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
             <div>
-              <h3 id="modal-prep-title" className="text-xl font-extrabold text-white">
+              <h3
+                id="modal-prep-title"
+                className="text-xl font-extrabold text-white"
+              >
                 ✨ Preparação do Roteiro de Leitura — {itemAtivo?.titulo}
               </h3>
               <p className="text-xs text-slate-400 mt-1">
-                Revise o texto extraído de cada página, marque páginas para pular (ex.:
-                assinaturas) e gere a voz sincronizada.
+                Revise o texto extraído de cada página, marque páginas para pular
+                (ex.: assinaturas) e gere a voz sincronizada.
               </p>
             </div>
 
@@ -947,7 +1439,9 @@ export default function PainelProLeituraPage() {
               >
                 <Sparkles className="w-4 h-4" />
                 <span>
-                  {revisandoIaModal ? 'Revisando com IA...' : '✨ Revisar Formatações'}
+                  {revisandoIaModal
+                    ? 'Revisando com IA...'
+                    : '✨ Revisar Formatações'}
                 </span>
               </button>
 
@@ -984,7 +1478,9 @@ export default function PainelProLeituraPage() {
                       onChange={(e) => {
                         const checked = e.target.checked;
                         setPaginasEdicao((prev) =>
-                          prev.map((x, i) => (i === idx ? { ...x, pular: checked } : x))
+                          prev.map((x, i) =>
+                            i === idx ? { ...x, pular: checked } : x
+                          )
                         );
                       }}
                       className="w-4 h-4 accent-red-600 rounded"
@@ -1001,7 +1497,9 @@ export default function PainelProLeituraPage() {
                   onChange={(e) => {
                     const val = e.target.value;
                     setPaginasEdicao((prev) =>
-                      prev.map((x, i) => (i === idx ? { ...x, texto: val } : x))
+                      prev.map((x, i) =>
+                        i === idx ? { ...x, texto: val } : x
+                      )
                     );
                   }}
                   aria-label={`Texto de leitura da Página ${p.pagina_real}`}

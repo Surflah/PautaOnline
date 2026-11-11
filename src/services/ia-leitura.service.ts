@@ -10,16 +10,78 @@ export interface PaginaRoteiroLeitura {
   audio_url?: string | null;
 }
 
+export interface PontoSincroniaAudio {
+  fracAudio: number; // 0..1 (tempo real no arquivo MP3)
+  fracTexto: number; // 0..1 (fração de caracteres lidos no texto da página)
+}
+
 export const VOZES_TTS_DISPONIVEIS = [
-  { id: 'nova', label: 'Nova (OpenAI — Feminina Dinâmica)' },
-  { id: 'shimmer', label: 'Shimmer (OpenAI — Feminina Clara)' },
-  { id: 'coral', label: 'Coral (OpenAI — Feminina Expressiva)' },
-  { id: 'sage', label: 'Sage (OpenAI — Feminina Institucional)' },
-  { id: 'onyx', label: 'Onyx (OpenAI — Masculina Grave)' },
-  { id: 'echo', label: 'Echo (OpenAI — Masculina Suave)' },
-  { id: 'fable', label: 'Fable (OpenAI — Narrador)' },
-  { id: 'alloy', label: 'Alloy (OpenAI — Neutra)' },
-  { id: 'google', label: 'Voz Google (Gratuita — Português Brasil)' },
+  {
+    id: 'google-feminina',
+    label: '🌐 Google Feminina Brasil (Gratuita — Padrão)',
+    gratuita: true,
+    genero: 'Feminina',
+  },
+  {
+    id: 'google-solene',
+    label: '🌐 Google Feminina Solene/Pausada (Gratuita — Brasil)',
+    gratuita: true,
+    genero: 'Feminina',
+  },
+  {
+    id: 'google-clara',
+    label: '🌐 Google Feminina Clara GTX (Gratuita — Brasil)',
+    gratuita: true,
+    genero: 'Feminina',
+  },
+  {
+    id: 'google-pt',
+    label: '🌐 Google Feminina Clássica (Gratuita — Português)',
+    gratuita: true,
+    genero: 'Feminina',
+  },
+  {
+    id: 'nova',
+    label: '✨ Nova (OpenAI — Feminina Dinâmica)',
+    gratuita: false,
+    genero: 'Feminina',
+  },
+  {
+    id: 'shimmer',
+    label: '✨ Shimmer (OpenAI — Feminina Clara)',
+    gratuita: false,
+    genero: 'Feminina',
+  },
+  {
+    id: 'coral',
+    label: '✨ Coral (OpenAI — Feminina Expressiva)',
+    gratuita: false,
+    genero: 'Feminina',
+  },
+  {
+    id: 'sage',
+    label: '✨ Sage (OpenAI — Feminina Institucional)',
+    gratuita: false,
+    genero: 'Feminina',
+  },
+  {
+    id: 'onyx',
+    label: '✨ Onyx (OpenAI — Masculina Grave)',
+    gratuita: false,
+    genero: 'Masculina',
+  },
+  {
+    id: 'echo',
+    label: '✨ Echo (OpenAI — Masculina Suave)',
+    gratuita: false,
+    genero: 'Masculina',
+  },
+  {
+    id: 'alloy',
+    label: '✨ Alloy (OpenAI — Neutra)',
+    gratuita: false,
+    genero: 'Neutra',
+  },
 ] as const;
 
 const ROMANOS_ORDINAIS: Record<string, string> = {
@@ -140,7 +202,7 @@ Regras obrigatórias:
 export async function extrairPaginasDoPdfLocal(
   pdfUrl: string
 ): Promise<PaginaRoteiroLeitura[]> {
-  const relPath = pdfUrl.replace(/^\//, '');
+  const relPath = pdfUrl.replace(/^\/api\/arquivos\//, 'uploads/').replace(/^\//, '');
   const fullPath = path.join(process.cwd(), 'public', relPath);
   const buf = await fs.readFile(fullPath);
 
@@ -162,43 +224,75 @@ export async function extrairPaginasDoPdfLocal(
   });
 }
 
-function dividirTextoEmBlocosGoogleTts(texto: string, maxLen = 185): string[] {
+interface BlocoTextoTts {
+  texto: string;
+  fracTextoFim: number;
+}
+
+function dividirTextoEmBlocosComOffset(texto: string, maxLen = 165): BlocoTextoTts[] {
   const sentencas = texto
     .replace(/([.!?;:])\s+/g, '$1|SPLIT|')
     .split('|SPLIT|')
     .map((s) => s.trim())
     .filter(Boolean);
 
-  const blocos: string[] = [];
+  const blocosTextos: string[] = [];
   let atual = '';
 
   for (const s of sentencas) {
     if (s.length > maxLen) {
       if (atual) {
-        blocos.push(atual.trim());
+        blocosTextos.push(atual.trim());
         atual = '';
       }
-      // Divide por vírgulas ou palavras
       const palavras = s.split(/\s+/);
       let sub = '';
       for (const p of palavras) {
         if ((sub + ' ' + p).trim().length > maxLen) {
-          if (sub) blocos.push(sub.trim());
+          if (sub) blocosTextos.push(sub.trim());
           sub = p;
         } else {
           sub = (sub + ' ' + p).trim();
         }
       }
-      if (sub) blocos.push(sub.trim());
+      if (sub) blocosTextos.push(sub.trim());
     } else if ((atual + ' ' + s).trim().length > maxLen) {
-      if (atual) blocos.push(atual.trim());
+      if (atual) blocosTextos.push(atual.trim());
       atual = s;
     } else {
       atual = (atual + ' ' + s).trim();
     }
   }
-  if (atual) blocos.push(atual.trim());
-  return blocos;
+  if (atual) blocosTextos.push(atual.trim());
+
+  const totalChars = Math.max(
+    1,
+    blocosTextos.reduce((acc, b) => acc + b.length, 0)
+  );
+  let acumChars = 0;
+
+  return blocosTextos.map((b) => {
+    acumChars += b.length;
+    return {
+      texto: b,
+      fracTextoFim: Math.min(1, acumChars / totalChars),
+    };
+  });
+}
+
+function montarUrlGoogleTts(bloco: string, varianteVoz: string): string {
+  const q = encodeURIComponent(bloco);
+  if (varianteVoz === 'google-solene') {
+    return `https://translate.google.com/translate_tts?ie=UTF-8&tl=pt-BR&client=tw-ob&ttsspeed=0.24&q=${q}`;
+  }
+  if (varianteVoz === 'google-clara') {
+    return `https://translate.googleapis.com/translate_tts?ie=UTF-8&tl=pt-BR&client=gtx&q=${q}`;
+  }
+  if (varianteVoz === 'google-pt') {
+    return `https://translate.google.com/translate_tts?ie=UTF-8&tl=pt-PT&client=tw-ob&ttsspeed=1&q=${q}`;
+  }
+  // Padrão: Google Feminina Brasil Fluida
+  return `https://translate.google.com/translate_tts?ie=UTF-8&tl=pt-BR&client=tw-ob&ttsspeed=1&q=${q}`;
 }
 
 export async function gerarAudioTtsPagina(params: {
@@ -207,16 +301,29 @@ export async function gerarAudioTtsPagina(params: {
   texto: string;
   voz: string;
   openaiKey?: string;
-}): Promise<{ audioUrl: string; provedor: 'openai' | 'google' }> {
+}): Promise<{
+  audioUrl: string;
+  provedor: 'openai' | 'google';
+  vozUsada: string;
+  mapaTempo: PontoSincroniaAudio[];
+}> {
   const textoLimpo = params.texto.trim();
   if (!textoLimpo) {
     throw new Error('Texto vazio para geração de áudio.');
   }
 
-  const vozEscolhida = params.voz || 'nova';
+  const vozEscolhida = params.voz || 'google-feminina';
   const chaveOpenai = (params.openaiKey || '').trim();
-  const usarOpenai = Boolean(chaveOpenai && vozEscolhida !== 'google');
-  const tagVoz = usarOpenai ? vozEscolhida : 'google';
+  const isVozGoogle =
+    vozEscolhida === 'google' || vozEscolhida.startsWith('google-');
+  const usarOpenai = Boolean(chaveOpenai && !isVozGoogle);
+  const tagVoz = usarOpenai
+    ? vozEscolhida
+    : isVozGoogle
+      ? vozEscolhida === 'google'
+        ? 'google-feminina'
+        : vozEscolhida
+      : 'google-feminina';
 
   const hash = crypto
     .createHash('md5')
@@ -228,22 +335,38 @@ export async function gerarAudioTtsPagina(params: {
   const dirAudios = path.join(process.cwd(), 'public', 'uploads', 'audios');
   await fs.mkdir(dirAudios, { recursive: true });
   const caminhoCompleto = path.join(dirAudios, nomeArquivo);
-  const urlPublica = `/uploads/audios/${nomeArquivo}`;
+  const caminhoJson = `${caminhoCompleto}.json`;
+  const urlPublica = `/api/arquivos/audios/${nomeArquivo}`;
 
   // Verifica cache determinístico em disco
   try {
     const stat = await fs.stat(caminhoCompleto);
     if (stat.size > 100) {
+      let mapaTempo: PontoSincroniaAudio[] = [
+        { fracAudio: 0, fracTexto: 0 },
+        { fracAudio: 1, fracTexto: 1 },
+      ];
+      try {
+        const rawJson = await fs.readFile(caminhoJson, 'utf-8');
+        const parsed = JSON.parse(rawJson);
+        if (Array.isArray(parsed) && parsed.length >= 2) {
+          mapaTempo = parsed;
+        }
+      } catch {
+        // Sem JSON complementar
+      }
       return {
         audioUrl: urlPublica,
         provedor: usarOpenai ? 'openai' : 'google',
+        vozUsada: tagVoz,
+        mapaTempo,
       };
     }
   } catch {
     // Arquivo ainda não existe no cache
   }
 
-  // 1. Tenta OpenAI TTS se houver chave configurada
+  // 1. Tenta OpenAI TTS se houver chave configurada e voz OpenAI selecionada
   if (usarOpenai) {
     try {
       const res = await fetch('https://api.openai.com/v1/audio/speech', {
@@ -262,38 +385,86 @@ export async function gerarAudioTtsPagina(params: {
 
       if (res.ok) {
         const ab = await res.arrayBuffer();
+        const mapaLinear: PontoSincroniaAudio[] = [
+          { fracAudio: 0, fracTexto: 0 },
+          { fracAudio: 1, fracTexto: 1 },
+        ];
         await fs.writeFile(caminhoCompleto, Buffer.from(ab));
-        return { audioUrl: urlPublica, provedor: 'openai' };
+        await fs.writeFile(caminhoJson, JSON.stringify(mapaLinear), 'utf-8');
+        return {
+          audioUrl: urlPublica,
+          provedor: 'openai',
+          vozUsada: vozEscolhida,
+          mapaTempo: mapaLinear,
+        };
       }
     } catch (err) {
-      console.warn('Falha na OpenAI TTS, acionando fallback Google TTS:', err);
+      console.warn('Falha na OpenAI TTS, acionando fallback Google Feminina:', err);
     }
   }
 
-  // 2. Fallback automático: Google TTS (Português do Brasil) concatenado em MP3 único
-  const blocos = dividirTextoEmBlocosGoogleTts(textoLimpo, 180);
-  const buffers: Buffer[] = [];
+  // 2. Vozes Gratuitas Google TTS (Feminina Brasil / Solene / Clara / Clássica)
+  // Busca em lotes paralelos de 6 blocos e constrói o mapa exato de sincronia de tempo por frase!
+  const blocos = dividirTextoEmBlocosComOffset(textoLimpo, 165);
+  const buffersPorBloco: { buf: Buffer; fracTextoFim: number }[] = [];
 
-  for (const bloco of blocos) {
-    const u = `https://translate.google.com/translate_tts?ie=UTF-8&tl=pt-BR&client=tw-ob&q=${encodeURIComponent(
-      bloco
-    )}`;
-    const res = await fetch(u, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-      },
-    });
-    if (res.ok) {
-      const ab = await res.arrayBuffer();
-      buffers.push(Buffer.from(ab));
+  const TAMANHO_LOTE = 6;
+  for (let i = 0; i < blocos.length; i += TAMANHO_LOTE) {
+    const lote = blocos.slice(i, i + TAMANHO_LOTE);
+    const resultadosLote = await Promise.all(
+      lote.map(async (bloco) => {
+        const u = montarUrlGoogleTts(bloco.texto, tagVoz);
+        const res = await fetch(u, {
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+          },
+        });
+        if (!res.ok) {
+          return null;
+        }
+        const ab = await res.arrayBuffer();
+        return {
+          buf: Buffer.from(ab),
+          fracTextoFim: bloco.fracTextoFim,
+        };
+      })
+    );
+
+    for (const item of resultadosLote) {
+      if (item && item.buf.length > 0) {
+        buffersPorBloco.push(item);
+      }
     }
   }
 
-  if (buffers.length === 0) {
+  if (buffersPorBloco.length === 0) {
     throw new Error('Não foi possível sintetizar o áudio da página.');
   }
 
-  await fs.writeFile(caminhoCompleto, Buffer.concat(buffers));
-  return { audioUrl: urlPublica, provedor: 'google' };
+  const totalBytes = Math.max(
+    1,
+    buffersPorBloco.reduce((acc, b) => acc + b.buf.length, 0)
+  );
+  const mapaTempo: PontoSincroniaAudio[] = [{ fracAudio: 0, fracTexto: 0 }];
+  let bytesAcumulados = 0;
+
+  for (const item of buffersPorBloco) {
+    bytesAcumulados += item.buf.length;
+    mapaTempo.push({
+      fracAudio: Math.min(1, Number((bytesAcumulados / totalBytes).toFixed(4))),
+      fracTexto: Number(item.fracTextoFim.toFixed(4)),
+    });
+  }
+
+  const mp3Final = Buffer.concat(buffersPorBloco.map((b) => b.buf));
+  await fs.writeFile(caminhoCompleto, mp3Final);
+  await fs.writeFile(caminhoJson, JSON.stringify(mapaTempo), 'utf-8');
+
+  return {
+    audioUrl: urlPublica,
+    provedor: 'google',
+    vozUsada: tagVoz,
+    mapaTempo,
+  };
 }

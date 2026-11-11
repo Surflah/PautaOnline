@@ -110,56 +110,6 @@ model PalavraLivre {
   @@unique([sessaoId, vereadorId])
 }
 
-model CerimonialEvento {
-  id                 Int                 @id @default(autoincrement())
-  nome               String
-  dataEvento         DateTime            @default(now())
-  status             String              @default("AGENDADO")
-  roteiroAtualOrdem  Int                 @default(1)
-  eleicaoCargoAtualId Int?
-  eleicaoStatus      String              @default("AGUARDANDO") // AGUARDANDO, CHAMADA, VOTACAO, ENCERRADA
-  eleicaoVereadorAtivoId Int?
-  gcLowerThirdJson   String?
-  createdAt          DateTime            @default(now())
-  pessoas            CerimonialPessoa[]
-  cargos             CerimonialCargo[]
-  roteiros           CerimonialRoteiro[]
-}
-
-model CerimonialPessoa {
-  id             Int                @id @default(autoincrement())
-  eventoId       Int
-  evento         CerimonialEvento   @relation(fields: [eventoId], references: [id], onDelete: Cascade)
-  nome           String
-  nomeartistico  String?
-  tratamento     String             @default("Vereador Mirim")
-  escola         String?
-  papel          String             @default("VEREADOR_MIRIM") // VEREADOR_MIRIM, MESA_PROVISORIA, AUTORIDADE
-  cargoMesa      String?            // PRESIDENTE_PROVISORIO, SECRETARIO_PROVISORIO
-  presente       Boolean            @default(false)
-  ordem          Int                @default(0)
-}
-
-model CerimonialCargo {
-  id        Int                @id @default(autoincrement())
-  eventoId  Int
-  evento    CerimonialEvento   @relation(fields: [eventoId], references: [id], onDelete: Cascade)
-  nome      String             // Presidente, Vice-Presidente, 1º Secretário, 2º Secretário
-  ordem     Int                @default(1)
-  eleitoId  Int?
-}
-
-model CerimonialRoteiro {
-  id         Int              @id @default(autoincrement())
-  eventoId   Int
-  evento     CerimonialEvento @relation(fields: [eventoId], references: [id], onDelete: Cascade)
-  ordem      Int
-  quemFala   String           // MESTRE_CERIMONIAS, PRESIDENTE, SECRETARIO, SISTEMA
-  titulo     String
-  textoFala  String
-  acaoSistema String?         // CHAMADA_POSSE, ELEICAO_MESA, ENCERRAMENTO
-}
-
 model AuditLog {
   id         Int      @id @default(autoincrement())
   usuario    String

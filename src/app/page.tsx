@@ -7,13 +7,13 @@ import {
   CheckCircle2,
   Mic2,
   Users,
-  Award,
   Sparkles,
   Printer,
   ArrowRight,
   Calendar,
   BookOpenCheck,
   ShieldCheck,
+  Volume2,
 } from 'lucide-react';
 
 export const dynamic = 'force-dynamic';
@@ -83,13 +83,13 @@ export default async function DashboardPage() {
       badge: `${totalVereadores} ativos`,
     },
     {
-      titulo: 'Cerimonial & Câmara Mirim',
+      titulo: 'Painel Pro de Leitura & Teleprompter IA',
       descricao:
-        'Gestão de sessões solenes, posse e eleição da Mesa Diretora Mirim com roteiro sincronizado para Mestre de Cerimônias, Telão e GC OBS.',
-      href: '/cerimonial',
-      icone: Award,
+        'Leitor automatizado de proposições e PDFs com vozes gratuitas (Google/Nativas) e OpenAI, rolagem automática linha a linha e sincronia com Telão OBS.',
+      href: ultimasSessoes[0] ? `/sessoes/${ultimasSessoes[0].id}/leitura` : '/sessoes',
+      icone: Volume2,
       cor: 'from-purple-600 to-fuchsia-700',
-      badge: 'Solenes & Mirim',
+      badge: 'Leitor IA & Auto-Scroll',
     },
   ];
 

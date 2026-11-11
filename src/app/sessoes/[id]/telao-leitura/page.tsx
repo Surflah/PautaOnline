@@ -95,10 +95,11 @@ export default function TelaoLeituraObsPage() {
       }
 
       try {
-        if (loadedPdfUrlRef.current !== estado.pdfUrl) {
-          loadedPdfUrlRef.current = estado.pdfUrl;
+        const urlResolvida = estado.pdfUrl.replace(/^\/uploads\//, '/api/arquivos/');
+        if (loadedPdfUrlRef.current !== urlResolvida) {
+          loadedPdfUrlRef.current = urlResolvida;
           renderedPageRef.current = 0;
-          const loadingTask = window.pdfjsLib.getDocument(estado.pdfUrl);
+          const loadingTask = window.pdfjsLib.getDocument(urlResolvida);
           pdfDocRef.current = await loadingTask.promise;
         }
 
@@ -190,10 +191,10 @@ export default function TelaoLeituraObsPage() {
       {/* Viewport do Documento PDF */}
       <div
         ref={viewportRef}
-        className="flex-1 w-full h-full overflow-y-hidden relative flex justify-center items-start pt-6 pb-24"
+        className="flex-1 w-full h-full overflow-y-hidden relative block pt-6 pb-[55vh]"
       >
         {!estado?.pdfUrl ? (
-          <div className="my-auto text-center space-y-4 bg-slate-900/80 border border-white/10 rounded-3xl p-10 text-white shadow-2xl max-w-lg">
+          <div className="my-20 mx-auto text-center space-y-4 bg-slate-900/80 border border-white/10 rounded-3xl p-10 text-white shadow-2xl max-w-lg">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src="/logo.png"

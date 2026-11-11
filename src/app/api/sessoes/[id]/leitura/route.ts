@@ -161,9 +161,9 @@ export async function POST(
       const pautaId = Number(body.pautaId);
       const pagina = Number(body.pagina || 1);
       const texto = String(body.texto || '').trim();
-      const voz = String(body.voz || 'nova');
+      const voz = String(body.voz || 'google-feminina');
 
-      const { audioUrl, provedor } = await gerarAudioTtsPagina({
+      const { audioUrl, provedor, vozUsada, mapaTempo } = await gerarAudioTtsPagina({
         pautaId,
         pagina,
         texto,
@@ -188,7 +188,13 @@ export async function POST(
         }
       }
 
-      return NextResponse.json({ ok: true, audioUrl, provedor });
+      return NextResponse.json({
+        ok: true,
+        audioUrl,
+        provedor,
+        vozUsada,
+        mapaTempo,
+      });
     }
 
     return NextResponse.json({ error: 'Ação inválida.' }, { status: 400 });

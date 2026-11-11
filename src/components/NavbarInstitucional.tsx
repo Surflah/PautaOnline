@@ -9,7 +9,6 @@ import {
   Users,
   CheckCircle2,
   Mic2,
-  Award,
   LogOut,
   Sparkles,
 } from 'lucide-react';
@@ -37,7 +36,6 @@ export function NavbarInstitucional() {
     { href: '/vereadores', label: 'Vereadores & IA', icon: Users },
     { href: '/sessoes?modo=deliberar', label: 'Deliberação', icon: CheckCircle2 },
     { href: '/palavra-livre', label: 'Espaço Regimental', icon: Mic2 },
-    { href: '/cerimonial', label: 'Cerimonial', icon: Award },
   ];
 
   return (

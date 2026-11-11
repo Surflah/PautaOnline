@@ -13,6 +13,14 @@ echo "🚀 Conectando na VPS ($VPS_HOST:$VPS_PORT) para implantar o PautaOnline.
 
 REMOTE_ENV="export ADMIN_PASSWORD=$(printf '%q' "${ADMIN_PASSWORD:-}");"
 
+# Envia a credencial do Google Cloud TTS (fora do git) para o servidor, se existir localmente
+if [ -f "credentials/google-tts.json" ]; then
+  echo "🔑 Enviando credencial do Google Cloud TTS..."
+  ssh -p "$VPS_PORT" -i "$SSH_KEY" "$VPS_HOST" "sudo mkdir -p /var/www/pauta/credentials && sudo chown -R \$USER:\$USER /var/www/pauta"
+  scp -P "$VPS_PORT" -i "$SSH_KEY" credentials/google-tts.json "$VPS_HOST:/var/www/pauta/credentials/google-tts.json"
+  ssh -p "$VPS_PORT" -i "$SSH_KEY" "$VPS_HOST" "chmod 600 /var/www/pauta/credentials/google-tts.json"
+fi
+
 ssh -p "$VPS_PORT" -i "$SSH_KEY" "$VPS_HOST" "$REMOTE_ENV bash -s" << 'EOF'
 set -e
 
@@ -38,6 +46,10 @@ SAPL_BASE_URL="https://sapl.itapoa.sc.leg.br"
 NEXT_PUBLIC_APP_URL="https://pauta.camaraitapoa.sc.gov.br"
 ENVEOF
   chmod 600 .env
+fi
+
+if [ -f credentials/google-tts.json ] && ! grep -q GOOGLE_APPLICATION_CREDENTIALS .env; then
+  echo 'GOOGLE_APPLICATION_CREDENTIALS="./credentials/google-tts.json"' >> .env
 fi
 
 mkdir -p public/uploads/pdfs public/uploads/audios

@@ -98,9 +98,9 @@ export default function PainelProLeituraPage() {
   const [barraTopoVisivel, setBarraTopoVisivel] = useState(true);
 
   // Vozes gratuitas selecionadas por padrão (Google Feminina Brasil)
-  const [vozTts, setVozTts] = useState('google-feminina');
+  const [vozTts, setVozTts] = useState('gcloud:pt-BR-Standard-D');
   const [vozesNativasPt, setVozesNativasPt] = useState<VozNativaSistema[]>([]);
-  const [playbackRate, setPlaybackRate] = useState(1.1);
+  const [playbackRate, setPlaybackRate] = useState(1.0);
   const [velocidadeScrollMult, setVelocidadeScrollMult] = useState(1.0); // 1.0 = Sincronia exata com a fala
   const [modoRolagem, setModoRolagem] = useState<'linha' | 'continuo'>('linha');
   const [volumeBoost, setVolumeBoost] = useState(1.7);
@@ -898,7 +898,11 @@ export default function PainelProLeituraPage() {
       const labelProvedor =
         dadosAudio.provedor === 'openai'
           ? `🔊 Voz Neural OpenAI (${dadosAudio.vozUsada}) — Pág. ${pagObj.pagina_real}`
-          : `🔊 Voz Google Feminina (${dadosAudio.vozUsada}) — Pág. ${pagObj.pagina_real} (Rolagem Linha a Linha Ativa)`;
+          : dadosAudio.provedor === 'gcloud'
+            ? `🔊 ${dadosAudio.vozUsada === 'gcloud:pt-BR-Standard-D' ? 'Andressa' : dadosAudio.vozUsada.replace('gcloud:', '')} (Google Cloud) — Pág. ${pagObj.pagina_real} • sincronia por palavra`
+            : `🔊 Voz Google gratuita (${dadosAudio.vozUsada}) — Pág. ${pagObj.pagina_real}${
+                vozTts.startsWith('gcloud:') ? ' ⚠️ Google Cloud indisponível, usando reserva' : ''
+              }`;
       setStatusFeedback(labelProvedor);
 
       if (audioRef.current) {
@@ -1232,9 +1236,21 @@ export default function PainelProLeituraPage() {
               }}
               className="px-2.5 py-2 rounded-xl bg-slate-800 border border-emerald-500/40 text-slate-100 font-bold max-w-[270px]"
             >
-              <optgroup label="🆓 Vozes Gratuitas Google IA (Sem Chave)">
+              <optgroup label="☁️ Google Cloud (credencial da Câmara)">
+                <option value="gcloud:pt-BR-Standard-D">⭐ Andressa (Padrão)</option>
+                <option value="gcloud:pt-BR-Wavenet-D">Wavenet D (Feminina Natural)</option>
+                <option value="gcloud:pt-BR-Neural2-A">Neural2 A (Feminina Neural)</option>
+                <option value="gcloud:pt-BR-Neural2-C">Neural2 C (Feminina Neural)</option>
+                <option value="gcloud:pt-BR-Wavenet-A">Wavenet A (Feminina)</option>
+                <option value="gcloud:pt-BR-Wavenet-C">Wavenet C (Feminina)</option>
+                <option value="gcloud:pt-BR-Standard-A">Standard A (Feminina)</option>
+                <option value="gcloud:pt-BR-Neural2-B">Neural2 B (Masculina Neural)</option>
+                <option value="gcloud:pt-BR-Wavenet-B">Wavenet B (Masculina)</option>
+                <option value="gcloud:pt-BR-Wavenet-E">Wavenet E (Masculina)</option>
+              </optgroup>
+              <optgroup label="🆓 Vozes Gratuitas Google (reserva, sem chave)">
                 <option value="google-feminina">
-                  🌐 Google Feminina Brasil (Fluida — Padrão)
+                  🌐 Google Feminina Brasil (Fluida)
                 </option>
                 <option value="google-solene">
                   🌐 Google Feminina Brasil (Cadência Solene)
@@ -1275,8 +1291,8 @@ export default function PainelProLeituraPage() {
               className="px-2.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-100 font-bold tabular-nums"
             >
               <option value={0.95}>Fala: 0.95x</option>
-              <option value={1.0}>Fala: 1.00x</option>
-              <option value={1.1}>Fala: 1.10x (Padrão)</option>
+              <option value={1.0}>Fala: 1.00x (Padrão)</option>
+              <option value={1.1}>Fala: 1.10x</option>
               <option value={1.15}>Fala: 1.15x</option>
               <option value={1.2}>Fala: 1.20x</option>
               <option value={1.25}>Fala: 1.25x</option>

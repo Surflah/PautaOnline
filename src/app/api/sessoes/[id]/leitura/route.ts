@@ -6,6 +6,7 @@ import {
   gerarAudioTtsPagina,
   PaginaRoteiroLeitura,
   VOZES_TTS_DISPONIVEIS,
+  VOZ_PADRAO,
 } from '@/services/ia-leitura.service';
 import { registrarAuditoria } from '@/lib/auth';
 
@@ -161,7 +162,7 @@ export async function POST(
       const pautaId = Number(body.pautaId);
       const pagina = Number(body.pagina || 1);
       const texto = String(body.texto || '').trim();
-      const voz = String(body.voz || 'google-feminina');
+      const voz = String(body.voz || VOZ_PADRAO);
 
       const { audioUrl, provedor, vozUsada, mapaTempo } = await gerarAudioTtsPagina({
         pautaId,

@@ -2,6 +2,7 @@ import { extractText } from 'unpdf';
 import fs from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
+import { sintetizarGoogleCloud, googleCloudDisponivel } from './google-cloud-tts.service';
 
 export interface PaginaRoteiroLeitura {
   pagina_real: number;
@@ -15,7 +16,20 @@ export interface PontoSincroniaAudio {
   fracTexto: number; // 0..1 (fração de caracteres lidos no texto da página)
 }
 
+export const VOZ_PADRAO = 'gcloud:pt-BR-Standard-D';
+
 export const VOZES_TTS_DISPONIVEIS = [
+  // Google Cloud TTS (credencial da Câmara) — com marcas de tempo por palavra (sincronia exata)
+  { id: 'gcloud:pt-BR-Standard-D', label: '⭐ Andressa (Google Cloud — Padrão)', gratuita: false, genero: 'Feminina' },
+  { id: 'gcloud:pt-BR-Wavenet-D', label: '☁️ Google Wavenet D (Feminina Natural)', gratuita: false, genero: 'Feminina' },
+  { id: 'gcloud:pt-BR-Neural2-A', label: '☁️ Google Neural2 A (Feminina Neural)', gratuita: false, genero: 'Feminina' },
+  { id: 'gcloud:pt-BR-Neural2-C', label: '☁️ Google Neural2 C (Feminina Neural)', gratuita: false, genero: 'Feminina' },
+  { id: 'gcloud:pt-BR-Wavenet-A', label: '☁️ Google Wavenet A (Feminina)', gratuita: false, genero: 'Feminina' },
+  { id: 'gcloud:pt-BR-Wavenet-C', label: '☁️ Google Wavenet C (Feminina)', gratuita: false, genero: 'Feminina' },
+  { id: 'gcloud:pt-BR-Standard-A', label: '☁️ Google Standard A (Feminina)', gratuita: false, genero: 'Feminina' },
+  { id: 'gcloud:pt-BR-Neural2-B', label: '☁️ Google Neural2 B (Masculina Neural)', gratuita: false, genero: 'Masculina' },
+  { id: 'gcloud:pt-BR-Wavenet-B', label: '☁️ Google Wavenet B (Masculina)', gratuita: false, genero: 'Masculina' },
+  { id: 'gcloud:pt-BR-Wavenet-E', label: '☁️ Google Wavenet E (Masculina)', gratuita: false, genero: 'Masculina' },
   {
     id: 'google-feminina',
     label: '🌐 Google Feminina Brasil (Gratuita — Padrão)',
@@ -303,7 +317,7 @@ export async function gerarAudioTtsPagina(params: {
   openaiKey?: string;
 }): Promise<{
   audioUrl: string;
-  provedor: 'openai' | 'google';
+  provedor: 'openai' | 'google' | 'gcloud';
   vozUsada: string;
   mapaTempo: PontoSincroniaAudio[];
 }> {
@@ -312,26 +326,36 @@ export async function gerarAudioTtsPagina(params: {
     throw new Error('Texto vazio para geração de áudio.');
   }
 
-  const vozEscolhida = params.voz || 'google-feminina';
+  const vozEscolhida = params.voz || VOZ_PADRAO;
   const chaveOpenai = (params.openaiKey || '').trim();
+  const isVozGcloud = vozEscolhida.startsWith('gcloud:');
+  const usarGcloud = isVozGcloud && (await googleCloudDisponivel());
   const isVozGoogle =
     vozEscolhida === 'google' || vozEscolhida.startsWith('google-');
-  const usarOpenai = Boolean(chaveOpenai && !isVozGoogle);
-  const tagVoz = usarOpenai
+  const usarOpenai = Boolean(chaveOpenai && !isVozGoogle && !isVozGcloud);
+  const tagVoz = usarGcloud
     ? vozEscolhida
-    : isVozGoogle
-      ? vozEscolhida === 'google'
-        ? 'google-feminina'
-        : vozEscolhida
-      : 'google-feminina';
+    : usarOpenai
+      ? vozEscolhida
+      : isVozGoogle && vozEscolhida !== 'google'
+        ? vozEscolhida
+        : 'google-feminina';
+  const provedorEsperado: 'openai' | 'google' | 'gcloud' = usarGcloud
+    ? 'gcloud'
+    : usarOpenai
+      ? 'openai'
+      : 'google';
+  // Velocidade de síntese da voz Google Cloud (mesma do leitor antigo)
+  const SPEAKING_RATE_GCLOUD = 1.2;
 
   const hash = crypto
     .createHash('md5')
-    .update(`${textoLimpo}|${tagVoz}`)
+    .update(`${textoLimpo}|${tagVoz}|${usarGcloud ? SPEAKING_RATE_GCLOUD : ''}`)
     .digest('hex')
     .slice(0, 10);
 
-  const nomeArquivo = `pauta_${params.pautaId}_pag_${params.pagina}_${tagVoz}_h${hash}.mp3`;
+  const tagArquivo = tagVoz.replace(/[^a-zA-Z0-9-]+/g, '_');
+  const nomeArquivo = `pauta_${params.pautaId}_pag_${params.pagina}_${tagArquivo}_h${hash}.mp3`;
   const dirAudios = path.join(process.cwd(), 'public', 'uploads', 'audios');
   await fs.mkdir(dirAudios, { recursive: true });
   const caminhoCompleto = path.join(dirAudios, nomeArquivo);
@@ -357,13 +381,42 @@ export async function gerarAudioTtsPagina(params: {
       }
       return {
         audioUrl: urlPublica,
-        provedor: usarOpenai ? 'openai' : 'google',
+        provedor: provedorEsperado,
         vozUsada: tagVoz,
         mapaTempo,
       };
     }
   } catch {
     // Arquivo ainda não existe no cache
+  }
+
+  // 0. Google Cloud TTS (credencial da Câmara) com marcas de tempo por palavra
+  if (usarGcloud) {
+    try {
+      const { audio, duracao, marcas } = await sintetizarGoogleCloud({
+        texto: textoLimpo,
+        voz: tagVoz.replace(/^gcloud:/, ''),
+        speakingRate: SPEAKING_RATE_GCLOUD,
+      });
+      const totalChars = Math.max(1, textoLimpo.length);
+      const dur = Math.max(0.001, duracao);
+      const mapaTempo: PontoSincroniaAudio[] = [{ fracAudio: 0, fracTexto: 0 }];
+      for (const m of marcas) {
+        const fa = Math.min(1, m.tempo / dur);
+        const ft = Math.min(1, m.charIndex / totalChars);
+        const ult = mapaTempo[mapaTempo.length - 1];
+        if (fa >= ult.fracAudio && ft >= ult.fracTexto) {
+          mapaTempo.push({ fracAudio: Number(fa.toFixed(5)), fracTexto: Number(ft.toFixed(5)) });
+        }
+      }
+      mapaTempo.push({ fracAudio: 1, fracTexto: 1 });
+      await fs.writeFile(caminhoCompleto, audio);
+      await fs.writeFile(caminhoJson, JSON.stringify(mapaTempo), 'utf-8');
+      return { audioUrl: urlPublica, provedor: 'gcloud', vozUsada: tagVoz, mapaTempo };
+    } catch (err) {
+      console.warn('Falha no Google Cloud TTS, usando voz gratuita de reserva:', err);
+      return gerarAudioTtsPagina({ ...params, voz: 'google-feminina' });
+    }
   }
 
   // 1. Tenta OpenAI TTS se houver chave configurada e voz OpenAI selecionada

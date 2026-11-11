@@ -33,3 +33,7 @@ prisma/*.db-journal
 public/uploads/pdfs/*.pdf
 public/uploads/audios/*.mp3
 public/uploads/audios/*.json
+
+# credenciais de serviços externos (nunca versionar)
+/credentials/
+*.credentials.json

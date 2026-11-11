@@ -153,6 +153,9 @@ export default function PainelProLeituraPage() {
   const pageContentBottomYRef = useRef<number>(0);
   const fracFalaNativaRef = useRef<number>(0);
   const usandoFalaNativaRef = useRef<boolean>(false);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const renderTaskRef = useRef<any>(null);
+  const renderSeqRef = useRef<number>(0);
 
   const paginaAtualObj = paginas[paginaIdx] || null;
 
@@ -259,6 +262,7 @@ export default function PainelProLeituraPage() {
     async (item: PautaItemLeitura, ignoreCache = false) => {
       pararAudio();
       setItemAtivo(item);
+      setPaginas([]);
       setPaginaIdx(0);
       setLinhaAtivaIdx(0);
       setRolagemManualAtiva(false);
@@ -304,6 +308,17 @@ export default function PainelProLeituraPage() {
 
   // Renderiza a página do PDF e constrói as linhas ancoradas (Motor Linha a Linha)
   useEffect(() => {
+    const seq = ++renderSeqRef.current;
+
+    if (renderTaskRef.current) {
+      try {
+        renderTaskRef.current.cancel();
+      } catch {
+        // Ignora cancelamento de renderização anterior
+      }
+      renderTaskRef.current = null;
+    }
+
     async function renderizarPaginaPdfEConstruirLinhas() {
       if (
         !pdfjsPronto ||
@@ -322,12 +337,14 @@ export default function PainelProLeituraPage() {
         );
         const loadingTask = window.pdfjsLib.getDocument(urlPdfResolvida);
         const pdfDoc = await loadingTask.promise;
+        if (seq !== renderSeqRef.current) return;
 
         const numPag = Math.min(
           Math.max(1, paginaAtualObj.pagina_real),
           pdfDoc.numPages
         );
         const page = await pdfDoc.getPage(numPag);
+        if (seq !== renderSeqRef.current || !canvasRef.current) return;
 
         const containerWidth =
           viewportContainerRef.current?.clientWidth || 1000;
@@ -344,8 +361,14 @@ export default function PainelProLeituraPage() {
 
         const ctx = canvas.getContext('2d');
         if (ctx) {
-          await page.render({ canvasContext: ctx, viewport }).promise;
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          const task = page.render({ canvasContext: ctx, viewport });
+          renderTaskRef.current = task;
+          await task.promise;
+          renderTaskRef.current = null;
         }
+        if (seq !== renderSeqRef.current) return;
 
         // Extrai itens de texto do PDF com coordenadas exatas no canvas
         const tc = await page.getTextContent();
@@ -507,13 +530,39 @@ export default function PainelProLeituraPage() {
         if (viewportContainerRef.current) {
           viewportContainerRef.current.scrollTop = 0;
         }
-      } catch (err) {
+      } catch (err: unknown) {
+        if (
+          err &&
+          typeof err === 'object' &&
+          'name' in err &&
+          (err as { name?: string }).name === 'RenderingCancelledException'
+        ) {
+          return;
+        }
         console.error('Erro ao renderizar página do PDF:', err);
       }
     }
 
     renderizarPaginaPdfEConstruirLinhas();
-  }, [pdfjsPronto, itemAtivo?.pdfUrl, paginaAtualObj]);
+
+    return () => {
+      renderSeqRef.current++;
+      if (renderTaskRef.current) {
+        try {
+          renderTaskRef.current.cancel();
+        } catch {
+          // Ignora
+        }
+        renderTaskRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    pdfjsPronto,
+    itemAtivo?.pdfUrl,
+    paginaAtualObj?.pagina_real,
+    paginaAtualObj?.texto,
+  ]);
 
   // Configura Web Audio API GainNode para amplificação limpa de voz em plenário
   function conectarGainNodeSeNecessario() {

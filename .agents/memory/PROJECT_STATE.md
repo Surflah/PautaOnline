@@ -4,6 +4,8 @@
 - **Fase**: Fase 3 Concluída e Refinada — Cerimonial/Câmara Mirim removidos por decisão do Controle Interno; Painel Pro de Leitura (`/sessoes/[id]/leitura`) atualizado com **Vozes Gratuitas Femininas Google IA** (`google-feminina` padrão, `google-solene`, `google-clara`, `google-pt`) + **Vozes Nativas do Sistema (`speechSynthesis`)** + **Motor de Rolagem Automática Linha a Linha (`LinhaPdfAncorada` + `mapaTempo` + Guia Visual de Linha Ativa)** e servidor dinâmico de arquivos (`/api/arquivos/[...caminho]`) com suporte a HTTP `206 Partial Content`.
 - **Repositório GitHub**: `https://github.com/Surflah/PautaOnline`
 - **Domínio de Produção**: `https://pauta.camaraitapoa.sc.gov.br` (DNS apontando para VPS `177.153.60.71`, usuário SSH `ticamitp`, porta interna `3005`, diretório `/var/www/pauta`).
+- **Autenticação**: senha do admin armazenada como hash `scrypt` (`src/lib/senha.ts`), nunca no código. Alterar com `ADMIN_PASSWORD='...' npm run admin:senha`. Deploy: `ADMIN_PASSWORD='...' ./deploy-vps.sh` (JWT_SECRET gerado no servidor via `openssl rand`).
+- **Bloqueio atual de deploy**: porta 22 da VPS recusa conexão (`Connection refused`) — aguardando confirmação da porta SSH / liberação do IP no Fail2Ban.
 
 ## Roteiro de Implementação (Fases)
 - [x] **Fase 0**: Engenharia reversa completa do sistema legado (`camara.itapoa.digital/pauta`), criação de regras (`AGENTS.md`), memória persistente (`.agents/memory/`) e skills modulares (`.agents/skills/`).

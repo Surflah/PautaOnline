@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { gerarHashSenha } from '../src/lib/senha';
 
 const prisma = new PrismaClient();
 
@@ -7,8 +8,13 @@ async function main() {
 
   // 1. Configurações Padrão
   const configs = [
-    { chave: 'usuario_admin', valor: 'camara' },
-    { chave: 'senha_admin', valor: 'camara@1010' },
+    { chave: 'usuario_admin', valor: process.env.ADMIN_USER || 'camara' },
+    // Senha nunca fica no código: vem de ADMIN_PASSWORD (.env) e é salva como hash scrypt.
+    // Sem ADMIN_PASSWORD, fica vazia (login bloqueado) até rodar scripts/set-admin-password.ts.
+    {
+      chave: 'senha_admin',
+      valor: process.env.ADMIN_PASSWORD ? gerarHashSenha(process.env.ADMIN_PASSWORD) : '',
+    },
     { chave: 'openai_key', valor: '' },
     { chave: 'obs_token', valor: 'itapoa-obs-2026' },
   ];

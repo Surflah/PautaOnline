@@ -2,14 +2,15 @@
   "name": "pauta-online",
   "version": "1.0.0",
   "private": true,
-  "description": "Sistema de Gestão de Pautas, Deliberação em Plenário, Leitura Automatizada com IA e Cerimonial — Câmara Municipal de Itapoá-SC",
+  "description": "Sistema de Gestão de Pautas, Deliberação em Plenário e Leitura Automatizada com IA — Câmara Municipal de Itapoá-SC",
   "scripts": {
     "dev": "next dev --port 3005",
     "build": "prisma generate && next build",
     "start": "next start --port 3005",
     "lint": "next lint",
     "db:push": "prisma db push",
-    "db:seed": "tsx prisma/seed.ts"
+    "db:seed": "tsx prisma/seed.ts",
+    "admin:senha": "tsx scripts/set-admin-password.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.4.1",

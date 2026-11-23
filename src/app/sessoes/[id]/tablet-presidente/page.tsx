@@ -6,6 +6,7 @@ import { calcularQuorum, verificarVotoPresidente } from '@/core/regimento';
 import {
   prepararFalaPresidente,
   limparTextoPresidente,
+  isDeliberacaoUrgencia,
 } from '@/core/fala-presidente';
 import {
   ArrowLeft,
@@ -248,8 +249,11 @@ export default function TabletPresidentePage() {
   const proximoItem =
     idxAtual >= 0 && idxAtual + 1 < itens.length ? itens[idxAtual + 1] : null;
 
+  const isItemVotavel = Boolean(
+    itemAtual?.votavel && !isDeliberacaoUrgencia(itemAtual.titulo)
+  );
   const isItemChamada = Boolean(
-    itemAtual && !itemAtual.votavel && itemAtual.ementa.includes('[CHAMADA]')
+    itemAtual && !isItemVotavel && itemAtual.ementa.includes('[CHAMADA]')
   );
 
   async function irParaItem(novoItemId: number) {
@@ -444,7 +448,7 @@ export default function TabletPresidentePage() {
 
   const temMarcacaoNaoSalvaNaTela =
     votosAlteradosNaoSalvos || chamadaAlteradaNaoSalva;
-  const proximoDesabilitado = Boolean(itemAtual?.votavel && !votacaoSalva);
+  const proximoDesabilitado = Boolean(isItemVotavel && !votacaoSalva);
 
   const partesEmentaChamada = itemAtual?.ementa.split('[CHAMADA]') || [''];
   const blocosFala = itemAtual
@@ -604,7 +608,7 @@ export default function TabletPresidentePage() {
         ) : (
           <div className="space-y-6">
             {/* MODO 1: SOMENTE LEITURA (RITO / EXPEDIENTE) — SEM TÍTULO "ITEM X: ..." */}
-            {!itemAtual.votavel && !isItemChamada && (
+            {!isItemVotavel && !isItemChamada && (
               <div className="space-y-6">
                 {blocosFala.map((bloco, i) =>
                   bloco.tipo === 'pausa' ? (
@@ -806,7 +810,7 @@ export default function TabletPresidentePage() {
             )}
 
             {/* MODO 3: ITEM VOTÁVEL (FALAS DE LEITURA, DISCUSSÃO E VOTAÇÃO + TABELA DE VOTOS) */}
-            {itemAtual.votavel && (
+            {isItemVotavel && (
               <div className="space-y-6">
                 {/* 3 Passos de Fala do Presidente com indicação de pausa */}
                 <div className="space-y-4">

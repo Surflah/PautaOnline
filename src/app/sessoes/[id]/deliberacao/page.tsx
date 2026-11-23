@@ -8,6 +8,7 @@ import { calcularQuorum, verificarVotoPresidente } from '@/core/regimento';
 import {
   prepararFalaPresidente,
   limparTextoPresidente,
+  isDeliberacaoUrgencia,
 } from '@/core/fala-presidente';
 import {
   CheckCircle2,
@@ -197,8 +198,11 @@ export default function DeliberacaoPlenarioPage() {
   const proximoItem =
     idxAtual >= 0 && idxAtual + 1 < itens.length ? itens[idxAtual + 1] : null;
 
+  const isItemVotavel = Boolean(
+    itemAtual?.votavel && !isDeliberacaoUrgencia(itemAtual.titulo)
+  );
   const isItemChamada = Boolean(
-    itemAtual && !itemAtual.votavel && itemAtual.ementa.includes('[CHAMADA]')
+    itemAtual && !isItemVotavel && itemAtual.ementa.includes('[CHAMADA]')
   );
 
   async function irParaItem(novoItemId: number) {
@@ -392,7 +396,7 @@ export default function DeliberacaoPlenarioPage() {
   });
 
   const temMarcacaoNaoSalvaNaTela = votosAlteradosNaoSalvos || chamadaAlteradaNaoSalva;
-  const proximoDesabilitado = Boolean(itemAtual?.votavel && !votacaoSalva);
+  const proximoDesabilitado = Boolean(isItemVotavel && !votacaoSalva);
 
   // Separa ementa para o modo [CHAMADA] e prepara blocos de fala limpa
   const partesEmentaChamada = itemAtual?.ementa.split('[CHAMADA]') || [''];
@@ -578,7 +582,7 @@ export default function DeliberacaoPlenarioPage() {
               </h1>
 
               {/* MODO 1: ITEM NÃO-VOTÁVEL COMUM */}
-              {!itemAtual.votavel && !isItemChamada && (
+              {!isItemVotavel && !isItemChamada && (
                 <div className="space-y-5">
                   {blocosFala.map((bloco, i) =>
                     bloco.tipo === 'pausa' ? (
@@ -762,7 +766,7 @@ export default function DeliberacaoPlenarioPage() {
               )}
 
               {/* MODO 3: ITEM VOTÁVEL */}
-              {itemAtual.votavel && (
+              {isItemVotavel && (
                 <div className="space-y-6">
                   {itemAtual.ementa && (
                     <p className="text-base sm:text-lg italic text-slate-600 text-center max-w-4xl mx-auto leading-relaxed">

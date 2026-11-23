@@ -3,10 +3,20 @@ export type BlocoFalaPresidente =
   | { tipo: 'pausa'; rotulo: string };
 
 /**
+ * Identifica itens de Deliberação de Regime de Urgência (Art. 51 LOM),
+ * que seguem o mesmo rito simbólico da Deliberação da Ata (sem votação nominal).
+ */
+export function isDeliberacaoUrgencia(titulo: string): boolean {
+  return /delibera[çc][ãa]o.*regime\s+de\s+urg[eê]ncia/i.test(titulo || '');
+}
+
+/**
  * Limpa e estrutura o texto que o Presidente lê em plenário:
  * - Remove o aviso legado "ESSE É O FIM DA PAUTA."
  * - Em itens de Leitura do Regimento Interno (ou quando há "Art. ..." após separador),
  *   remove o texto integral do artigo, mantendo apenas o que o Presidente lê.
+ * - Em itens de Deliberação de Regime de Urgência já salvos no formato antigo (bloco único),
+ *   completa automaticamente com a 1ª fala simbólica + pausa + 2ª fala (igual à Deliberação da Ata).
  * - Separa blocos divididos por traços ("-----") em falas distintas com um indicador
  *   claro de espera (ex.: "Aguarde a leitura da Servidora" ou "Aguarde a manifestação do Plenário").
  */
@@ -30,6 +40,22 @@ export function prepararFalaPresidente(
 
   if (partesBrutas.length === 0) {
     return [];
+  }
+
+  // 3. Compatibilidade com sessões já salvas: Deliberação de Regime de Urgência sem separador
+  if (isDeliberacaoUrgencia(titulo) && partesBrutas.length === 1) {
+    const primeiraFala = /permane[çc]a/i.test(partesBrutas[0])
+      ? partesBrutas[0]
+      : `${partesBrutas[0]}\n\nQuem for favorável permaneça como estão.`;
+    return [
+      { tipo: 'fala', ordem: 1, texto: primeiraFala },
+      { tipo: 'pausa', rotulo: 'Aguarde a manifestação do Plenário' },
+      {
+        tipo: 'fala',
+        ordem: 2,
+        texto: 'DECLARO o Regime de Urgência aprovado por unanimidade.',
+      },
+    ];
   }
 
   // 3. Se for Leitura do Regimento Interno ou a 2ª parte começar com "Art." / "Artigo",

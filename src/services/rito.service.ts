@@ -152,11 +152,11 @@ export async function montarPreviaCompletaSapl(params: {
     itens.push({
       numero: itens.length + 1,
       titulo: `Deliberação - Regime de Urgência (Art. 51 LOM) - ${siglasUrg}`,
-      ementa: `Coloco em DELIBERAÇÃO a solicitação de Regime de Urgência (Art. 51 da Lei Orgânica Municipal) para tramitação dos seguintes projetos:\n\n${listaUrg}`,
-      tipoItem: 'Requerimento',
+      ementa: `Coloco em DELIBERAÇÃO a solicitação de Regime de Urgência (Art. 51 da Lei Orgânica Municipal) para tramitação dos seguintes projetos:\n\n${listaUrg}\n\nQuem for favorável permaneça como estão.\n-----------------------\nDECLARO o Regime de Urgência aprovado por unanimidade.`,
+      tipoItem: 'Rito / Expediente',
       autor: 'Poder Executivo',
-      votacaoEtapa: 'Única Votação',
-      votavel: true,
+      votacaoEtapa: 'Não Votável',
+      votavel: false,
     });
   }
 

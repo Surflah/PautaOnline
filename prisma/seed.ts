@@ -74,7 +74,7 @@ async function main() {
         numero: 2,
         titulo: 'Leitura do Regimento Interno',
         ementa:
-          'Solicito a Servidora Patrícia que proceda com a Leitura do artigo 127 do Regimento Interno desta casa.\n--------------------\nArt. 127. O Setor de Protocolo ou a Secretaria da Casa receberá os documentos de origem dos Poderes Executivo e Legislativo de Itapoá e protocolará por meio do e-mail oficial protocolo@camaraitapoa.sc.gov.br.\nParágrafo único. As correspondências impressas devem ser recebidas e encaminhadas para a pasta de leitura das correspondências das Reuniões Ordinárias.',
+          'Solicito a Servidora Patrícia que proceda com a Leitura do artigo 127 do Regimento Interno desta casa.',
         tipoItem: 'Rito / Expediente',
         autor: '',
         votacaoEtapa: 'Não Votável',
@@ -164,8 +164,7 @@ async function main() {
       {
         numero: 11,
         titulo: 'Leitura das Indicações',
-        ementa:
-          'Solicito a Leitura das Indicações 316 a 324 de 2026. ESSE É O FIM DA PAUTA.',
+        ementa: 'Solicito a Leitura das Indicações 316 a 324 de 2026.',
         tipoItem: 'Indicação',
         autor: 'Diversos Vereadores',
         votacaoEtapa: 'Não Votável',

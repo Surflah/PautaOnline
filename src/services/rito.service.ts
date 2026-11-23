@@ -1,5 +1,4 @@
 import {
-  buscarArtigoRegimento,
   buscarOrdemDoDiaSapl,
   triarExpedienteSapl,
   SaplMateriaOrdemDia,
@@ -35,8 +34,7 @@ export async function montarPreviaCompletaSapl(params: {
   ordemDoDia: SaplMateriaOrdemDia[];
   itensPrevia: ItemPreviaRito[];
 }> {
-  const [textoArtigo, expediente, ordemDoDia] = await Promise.all([
-    buscarArtigoRegimento(params.artigoRi),
+  const [expediente, ordemDoDia] = await Promise.all([
     triarExpedienteSapl(params.saplSessaoId),
     buscarOrdemDoDiaSapl(params.saplSessaoId),
   ]);
@@ -59,11 +57,11 @@ export async function montarPreviaCompletaSapl(params: {
     votavel: false,
   });
 
-  // 2. Leitura do Regimento Interno
+  // 2. Leitura do Regimento Interno (somente a fala do Presidente)
   itens.push({
     numero: itens.length + 1,
     titulo: 'Leitura do Regimento Interno',
-    ementa: `Solicito a ${trat} ${serv} que proceda com a Leitura do artigo ${params.artigoRi} do Regimento Interno desta casa.\n--------------------\n${textoArtigo}`,
+    ementa: `Solicito a ${trat} ${serv} que proceda com a Leitura do artigo ${params.artigoRi} do Regimento Interno desta casa.`,
     tipoItem: 'Rito / Expediente',
     autor: '',
     votacaoEtapa: 'Não Votável',
@@ -248,7 +246,7 @@ export async function montarPreviaCompletaSapl(params: {
     itens.push({
       numero: itens.length + 1,
       titulo: 'Leitura das Indicações',
-      ementa: `Solicito a Leitura ${faixaTexto}. ESSE É O FIM DA PAUTA.`,
+      ementa: `Solicito a Leitura ${faixaTexto}.`,
       tipoItem: 'Indicação',
       autor: 'Diversos Vereadores',
       votacaoEtapa: 'Não Votável',

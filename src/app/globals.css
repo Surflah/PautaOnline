@@ -19,6 +19,15 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Impede rolagem da página atrás de modais <dialog> nativos */
+dialog:modal {
+  overscroll-behavior: contain;
+}
+dialog::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
 @media print {
   .no-print {
     display: none !important;

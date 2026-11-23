@@ -6,6 +6,10 @@ import Link from 'next/link';
 import { NavbarInstitucional } from '@/components/NavbarInstitucional';
 import { calcularQuorum, verificarVotoPresidente } from '@/core/regimento';
 import {
+  prepararFalaPresidente,
+  limparTextoPresidente,
+} from '@/core/fala-presidente';
+import {
   CheckCircle2,
   ArrowRight,
   ArrowLeft,
@@ -17,6 +21,8 @@ import {
   Mic2,
   Users,
   CheckCheck,
+  Tablet,
+  PauseCircle,
 } from 'lucide-react';
 
 interface PautaItemDelib {
@@ -388,8 +394,11 @@ export default function DeliberacaoPlenarioPage() {
   const temMarcacaoNaoSalvaNaTela = votosAlteradosNaoSalvos || chamadaAlteradaNaoSalva;
   const proximoDesabilitado = Boolean(itemAtual?.votavel && !votacaoSalva);
 
-  // Separa ementa para o modo [CHAMADA]
+  // Separa ementa para o modo [CHAMADA] e prepara blocos de fala limpa
   const partesEmentaChamada = itemAtual?.ementa.split('[CHAMADA]') || [''];
+  const blocosFala = itemAtual
+    ? prepararFalaPresidente(itemAtual.titulo, itemAtual.ementa)
+    : [];
 
   return (
     <div
@@ -481,7 +490,18 @@ export default function DeliberacaoPlenarioPage() {
             </select>
           </div>
 
-          <div className="flex items-center justify-between lg:justify-end gap-3">
+          <div className="flex flex-wrap items-center justify-between lg:justify-end gap-3">
+            <a
+              href={`/sessoes/${sessaoId}/tablet-presidente`}
+              target="_blank"
+              rel="noreferrer"
+              className="min-h-[48px] px-4 py-2.5 rounded-xl bg-[#0A2540] hover:bg-blue-950 text-white font-bold text-sm flex items-center gap-2 shadow-sm transition-all"
+              title="Abrir página limpa em tela cheia para o Tablet do Presidente"
+            >
+              <Tablet className="w-4 h-4 text-emerald-400" />
+              <span>Tablet do Presidente</span>
+            </a>
+
             {itemAtual?.pdfUrl && (
               <a
                 href={itemAtual.pdfUrl}
@@ -559,13 +579,32 @@ export default function DeliberacaoPlenarioPage() {
 
               {/* MODO 1: ITEM NÃO-VOTÁVEL COMUM */}
               {!itemAtual.votavel && !isItemChamada && (
-                <div className="space-y-6">
-                  <div className="p-6 sm:p-8 rounded-2xl bg-amber-50/90 border-l-8 border-amber-400 text-slate-900 text-xl sm:text-2xl font-semibold leading-relaxed whitespace-pre-line shadow-xs">
-                    {itemAtual.ementa || itemAtual.titulo}
-                  </div>
-                  <p className="text-center text-lg font-bold italic text-slate-500">
-                    Este item faz parte do rito / expediente e não é votável.
-                  </p>
+                <div className="space-y-5">
+                  {blocosFala.map((bloco, i) =>
+                    bloco.tipo === 'pausa' ? (
+                      <div
+                        key={`pausa-${i}`}
+                        className="flex items-center justify-center gap-2.5 py-3.5 px-5 rounded-2xl bg-slate-100 border-2 border-dashed border-slate-300 text-slate-700 font-extrabold text-base"
+                      >
+                        <PauseCircle className="w-5 h-5 text-amber-600 shrink-0" />
+                        <span>{bloco.rotulo}</span>
+                      </div>
+                    ) : (
+                      <div
+                        key={`fala-${i}`}
+                        className="p-6 sm:p-8 rounded-2xl bg-amber-50/90 border-l-8 border-amber-400 text-slate-900 space-y-2 shadow-xs"
+                      >
+                        {blocosFala.length > 1 && (
+                          <span className="inline-block px-3 py-0.5 rounded-full bg-amber-200/80 text-amber-950 text-xs font-black uppercase tracking-wider">
+                            {bloco.ordem}ª Fala
+                          </span>
+                        )}
+                        <p className="text-xl sm:text-2xl font-semibold leading-relaxed whitespace-pre-line">
+                          {bloco.texto}
+                        </p>
+                      </div>
+                    )
+                  )}
                 </div>
               )}
 
@@ -574,7 +613,7 @@ export default function DeliberacaoPlenarioPage() {
                 <div className="space-y-6">
                   {partesEmentaChamada[0]?.trim() && (
                     <div className="p-5 sm:p-6 rounded-2xl bg-amber-50/90 border-l-8 border-amber-400 text-slate-900 text-lg sm:text-xl font-semibold leading-relaxed whitespace-pre-line">
-                      {partesEmentaChamada[0].trim()}
+                      {limparTextoPresidente(partesEmentaChamada[0])}
                     </div>
                   )}
 
@@ -716,7 +755,7 @@ export default function DeliberacaoPlenarioPage() {
 
                   {partesEmentaChamada[1]?.trim() && (
                     <div className="p-5 sm:p-6 rounded-2xl bg-amber-50/90 border-l-8 border-amber-400 text-slate-900 text-lg sm:text-xl font-semibold leading-relaxed whitespace-pre-line">
-                      {partesEmentaChamada[1].trim()}
+                      {limparTextoPresidente(partesEmentaChamada[1])}
                     </div>
                   )}
                 </div>
@@ -978,15 +1017,24 @@ export default function DeliberacaoPlenarioPage() {
           ref={dialogFaltantesRef}
           aria-labelledby="modal-faltantes-title"
           onClick={(e) => {
-            if (e.target === dialogFaltantesRef.current)
-              dialogFaltantesRef.current?.close();
+            const dlg = dialogFaltantesRef.current;
+            if (!dlg) return;
+            const r = dlg.getBoundingClientRect();
+            if (
+              e.clientX < r.left ||
+              e.clientX > r.right ||
+              e.clientY < r.top ||
+              e.clientY > r.bottom
+            ) {
+              dlg.close();
+            }
           }}
           className="rounded-3xl p-0 backdrop:bg-slate-900/60 shadow-2xl border border-slate-200 w-full max-w-md m-auto"
         >
           <div className="p-7 space-y-5">
             <div className="flex items-center justify-center gap-2 text-amber-700 font-black text-xl">
               <AlertTriangle className="w-6 h-6 text-amber-600" />
-              <h3 id="modal-faltantes-title">Presença não marcada</h3>
+              <h2 id="modal-faltantes-title">Presença não marcada</h2>
             </div>
             <p className="text-base font-semibold text-slate-700">
               Ainda falta marcar a presença de:
@@ -999,6 +1047,7 @@ export default function DeliberacaoPlenarioPage() {
             <div className="flex flex-wrap justify-center gap-3 pt-2">
               <button
                 type="button"
+                autoFocus
                 onClick={() => dialogFaltantesRef.current?.close()}
                 className="min-h-[48px] px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-base cursor-pointer"
               >

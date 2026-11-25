@@ -16,6 +16,12 @@ export interface PontoSincroniaAudio {
   fracTexto: number; // 0..1 (fração de caracteres lidos no texto da página)
 }
 
+export type ProvedorRevisaoIa =
+  | 'gemini-pdf'
+  | 'gemini-texto'
+  | 'openai'
+  | 'regras-locais';
+
 export const VOZ_PADRAO = 'gcloud:pt-BR-Standard-D';
 
 export const VOZES_TTS_DISPONIVEIS = [
@@ -32,7 +38,7 @@ export const VOZES_TTS_DISPONIVEIS = [
   { id: 'gcloud:pt-BR-Wavenet-E', label: '☁️ Google Wavenet E (Masculina)', gratuita: false, genero: 'Masculina' },
   {
     id: 'google-feminina',
-    label: '🌐 Google Feminina Brasil (Gratuita — Padrão)',
+    label: '🌐 Google Feminina Brasil (Gratuita — Reserva)',
     gratuita: true,
     genero: 'Feminina',
   },
@@ -119,44 +125,152 @@ const ROMANOS_ORDINAIS: Record<string, string> = {
   XVIII: 'Décimo oitavo',
   XIX: 'Décimo nono',
   XX: 'Vigésimo',
+  XXI: 'Vigésimo primeiro',
+  XXII: 'Vigésimo segundo',
+  XXIII: 'Vigésimo terceiro',
+  XXIV: 'Vigésimo quarto',
+  XXV: 'Vigésimo quinto',
+  XXVI: 'Vigésimo sexto',
+  XXVII: 'Vigésimo sétimo',
+  XXVIII: 'Vigésimo oitavo',
+  XXIX: 'Vigésimo nono',
+  XXX: 'Trigésimo',
+};
+
+const ORDINAIS_1_A_9: Record<string, string> = {
+  '1': 'primeiro',
+  '2': 'segundo',
+  '3': 'terceiro',
+  '4': 'quarto',
+  '5': 'quinto',
+  '6': 'sexto',
+  '7': 'sétimo',
+  '8': 'oitavo',
+  '9': 'nono',
+};
+
+const MESES_POR_EXTENSO: Record<number, string> = {
+  1: 'janeiro',
+  2: 'fevereiro',
+  3: 'março',
+  4: 'abril',
+  5: 'maio',
+  6: 'junho',
+  7: 'julho',
+  8: 'agosto',
+  9: 'setembro',
+  10: 'outubro',
+  11: 'novembro',
+  12: 'dezembro',
 };
 
 export function limparTextoLegislativoDeterministico(raw: string): string {
   let txt = raw || '';
 
-  // Remove blocos de assinatura digital ICP-Brasil e rodapés de verificação
+  // 1. Remove tags "[assinado digitalmente]", "(assinado digitalmente)" e blocos ICP-Brasil / verificador
+  txt = txt.replace(/\[\s*assinado\s+digitalmente[^\]]*\]/gi, ' ');
+  txt = txt.replace(/\(\s*assinado\s+digitalmente[^)]*\)/gi, ' ');
   txt = txt.replace(
-    /Documento assinado digitalmente[\s\S]*?(?=\n\n|$)/gi,
-    ''
+    /Documento\s+assinado\s+digitalmente[\s\S]*?(?=\n\n|$)/gi,
+    ' '
   );
-  txt = txt.replace(/Assinado digitalmente por[\s\S]*?(?=\n\n|$)/gi, '');
-  txt = txt.replace(/Para verificar a validade das assinaturas[\s\S]*?(?=\n\n|$)/gi, '');
-  txt = txt.replace(/Código verificador:.*$/gim, '');
-  txt = txt.replace(/https?:\/\/\S+/gi, '');
-  txt = txt.replace(/Página\s+\d+\s+de\s+\d+/gi, '');
+  txt = txt.replace(/Assinado\s+(?:digitalmente|eletronicamente)\s+por[\s\S]*?(?=\n\n|$)/gi, ' ');
+  txt = txt.replace(
+    /Consulte\s+a\s+autenticidade\s+e\s+integridade[\s\S]*?(?=\n\n|$)/gi,
+    ' '
+  );
+  txt = txt.replace(
+    /Para\s+verificar\s+a\s+validade\s+das\s+assinaturas[\s\S]*?(?=\n\n|$)/gi,
+    ' '
+  );
+  txt = txt.replace(
+    /A\s+autenticidade\s+deste\s+documento\s+pode\s+ser\s+conferida[\s\S]*?(?=\n\n|$)/gi,
+    ' '
+  );
+  txt = txt.replace(/Código\s+(?:verificador|CRC|de\s+autenticidade)\s*:?.*$/gim, ' ');
+  txt = txt.replace(/Chave\s+de\s+validação\s*:?.*$/gim, ' ');
+  txt = txt.replace(/https?:\/\/\S+/gi, ' ');
+  txt = txt.replace(/\bwww\.\S+/gi, ' ');
+  txt = txt.replace(/Página\s+\d+\s+(?:de|\/)\s+\d+/gi, ' ');
+  txt = txt.replace(/Pág\.?\s*\d+\s*(?:de|\/)\s*\d+/gi, ' ');
+  txt = txt.replace(/\bFl(?:s)?\.?\s*\d+\s*\/\s*\d+/gi, ' ');
 
-  // Une linhas quebradas no meio de frases pelo layout do PDF
+  // Remove linhas de sublinhado ou traços longos de assinatura
+  txt = txt.replace(/_{3,}/g, ' ');
+  txt = txt.replace(/-{4,}/g, ' ');
+  txt = txt.replace(/\.{4,}/g, ' ');
+
+  // 2. Une linhas quebradas no meio de frases pelo layout do PDF
   txt = txt
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter(Boolean)
     .join(' ');
 
-  // Expansões legislativas para leitura fluida em plenário
-  txt = txt.replace(/\bItapoá\/SC\b/gi, 'Itapoá');
-  txt = txt.replace(/\b(?:nº|n\.º|n\.)\s*(\d+)/gi, 'Número $1');
-  txt = txt.replace(/\bArt\.\s*(\d+)º?/gi, 'Artigo $1');
-  txt = txt.replace(/§\s*1º/g, 'Parágrafo primeiro');
-  txt = txt.replace(/§\s*2º/g, 'Parágrafo segundo');
-  txt = txt.replace(/§\s*3º/g, 'Parágrafo terceiro');
-  txt = txt.replace(/§\s*(\d+)º?/g, 'Parágrafo $1');
-
-  // Converte incisos romanos comuns ("I - ", "II – ")
+  // 3. Converte datas DD/MM/AAAA para extenso ("25 de novembro de 2026") ANTES de tratar barras número/ano
   txt = txt.replace(
-    /\b(XX|XIX|XVIII|XVII|XVI|XV|XIV|XIII|XII|XI|X|IX|VIII|VII|VI|V|IV|III|II|I)\s*[-–—]\s*/g,
+    /\b(0?[1-9]|[12]\d|3[01])\s*\/\s*(0?[1-9]|1[0-2])\s*\/\s*(19\d{2}|20\d{2})\b/g,
+    (match, dStr, mStr, anoStr) => {
+      const dia = parseInt(dStr, 10);
+      const mes = MESES_POR_EXTENSO[parseInt(mStr, 10)];
+      if (!mes) return match;
+      const diaFalado = dia === 1 ? 'primeiro' : String(dia);
+      return `${diaFalado} de ${mes} de ${anoStr}`;
+    }
+  );
+
+  // 4. Corrige números legislativos com ano ("43/2026", "1.489/2025", "02/2026") para NUNCA ler como fração ("avos")!
+  txt = txt.replace(
+    /\b(\d+(?:\.\d{3})*)\s*\/\s*(19\d{2}|20\d{2})\b/g,
+    (_match, numStr, anoStr) => {
+      const numSemZeroEsq = numStr.replace(/^0+(\d)/, '$1');
+      return `${numSemZeroEsq} de ${anoStr}`;
+    }
+  );
+
+  // Anos de 2 dígitos após termos legislativos (ex.: "Lei nº 43/26" -> "Lei nº 43 de 2026")
+  txt = txt.replace(
+    /\b((?:nº|n\.º|n°|n\.|número|lei|decreto|portaria|resolução|ata|ofício|requerimento|indicação|moção|emenda|parecer|projeto)\s+\d+(?:\.\d{3})*)\s*\/\s*(\d{2})\b/gi,
+    (_m, prefixo, ano2) => {
+      const a = parseInt(ano2, 10);
+      const anoCompleto = a <= 50 ? `20${ano2}` : `19${ano2}`;
+      return `${prefixo} de ${anoCompleto}`;
+    }
+  );
+
+  // 5. Expansões legislativas para leitura fluida em plenário
+  txt = txt.replace(/Câmara\s+Municipal\s+de\s+Itapoá\s*[-/]\s*SC/gi, 'Câmara Municipal de Itapoá');
+  txt = txt.replace(/\bItapoá\s*[-/]\s*SC\b/gi, 'Itapoá');
+  txt = txt.replace(/\bPLO\b/g, 'Projeto de Lei Ordinária');
+  txt = txt.replace(/\bPLC\b/g, 'Projeto de Lei Complementar');
+  txt = txt.replace(/\bPDL\b/g, 'Projeto de Decreto Legislativo');
+  txt = txt.replace(/\bLOM\b/g, 'Lei Orgânica Municipal');
+
+  // "nº", "n.º", "n°", "N." antes de números
+  txt = txt.replace(/\b(?:nº|n\.º|n°|N\.º|N°)\s*(\d+)/gi, 'número $1');
+  txt = txt.replace(/\bN\.\s*(\d+)/g, 'número $1');
+
+  // Artigos: 1º a 9º como ordinais ("Artigo primeiro"), 10+ como cardinais ("Artigo 10")
+  txt = txt.replace(/\bArt\.?\s*([1-9])\s*[º°]?(?!\d)/gi, (_m, d) => {
+    return `Artigo ${ORDINAIS_1_A_9[d] || d}`;
+  });
+  txt = txt.replace(/\bArt\.?\s*(\d+)\s*[º°]?/gi, 'Artigo $1');
+
+  // Parágrafos (§ 1º..9º, §§, Par. único)
+  txt = txt.replace(/§§\s*/g, 'Parágrafos ');
+  txt = txt.replace(/§\s*único/gi, 'Parágrafo único');
+  txt = txt.replace(/\bPar\.\s*único/gi, 'Parágrafo único');
+  txt = txt.replace(/§\s*([1-9])\s*[º°]?(?!\d)/g, (_m, d) => {
+    return `Parágrafo ${ORDINAIS_1_A_9[d] || d}`;
+  });
+  txt = txt.replace(/§\s*(\d+)\s*[º°]?/g, 'Parágrafo $1');
+
+  // Converte incisos romanos comuns ("I - ", "II – ", "IV — ")
+  txt = txt.replace(
+    /\b(XXX|XXIX|XXVIII|XXVII|XXVI|XXV|XXIV|XXIII|XXII|XXI|XX|XIX|XVIII|XVII|XVI|XV|XIV|XIII|XII|XI|X|IX|VIII|VII|VI|V|IV|III|II|I)\s*[-–—]\s*/g,
     (match, rom) => {
       const ord = ROMANOS_ORDINAIS[rom];
-      return ord ? `${ord}. ` : match;
+      return ord ? `${ord}: ` : match;
     }
   );
 
@@ -164,53 +278,242 @@ export function limparTextoLegislativoDeterministico(raw: string): string {
   return txt;
 }
 
+const PROMPT_SISTEMA_REVISAO_LEGISLATIVA = `Você é um revisor legislativo oficial da Câmara Municipal de Itapoá-SC preparando o texto de uma proposição legislativa para leitura em voz alta por voz sintética (TTS) em plenário.
+
+Regras obrigatórias e rigorosas:
+1. REMOVA COMPLETAMENTE: textos tachados/riscados, cabeçalhos e rodapés repetitivos de papel timbrado, numeração de página ("Página X de Y"), linhas de assinatura e TODOS os avisos/carimbos de assinatura digital ("[assinado digitalmente]", "Documento assinado digitalmente", "ICP-Brasil", "Consulte a autenticidade", "Código verificador", URLs).
+2. TABELAS E QUADROS: nunca leia colunas soltas ou desconexas! Converta qualquer tabela (como quadros de dotações orçamentárias, tabelas de cargos/vencimentos, cronogramas ou demonstrativos) em prosa corrida, clara e natural para quem está apenas ouvindo, associando o nome de cada coluna ao seu respectivo valor em cada linha.
+3. NÚMEROS E BARRAS (PROIBIDO DEIXAR FRAÇÃO): JAMAIS deixe "43/2026" ou "1.489/2025" com barra "/", pois o leitor lê como fração ("avos"). Escreva sempre "quarenta e três de dois mil e vinte e seis" (ou "43 de 2026").
+4. VALORES, DATAS E DISPOSITIVOS LEGAIS: escreva valores monetários (R$ 15.000,00 -> quinze mil reais), porcentagens, datas, artigos (Art. 1º -> Artigo primeiro; Art. 10 -> Artigo dez), parágrafos (§ 1º -> Parágrafo primeiro) e incisos romanos (I - -> Inciso primeiro:) de forma fluida para leitura em voz alta.
+5. FIDELIDADE JURÍDICA: não resuma, não omita o mérito do texto e não adicione comentários como "Aqui está o texto:". Retorne exclusivamente o texto pronto para leitura.`;
+
 export async function revisarPaginaComIA(
   textoOriginal: string,
-  openaiKey?: string
+  opcoes?: { openaiKey?: string; geminiKey?: string } | string
 ): Promise<string> {
   const baseLimpa = limparTextoLegislativoDeterministico(textoOriginal);
   if (!baseLimpa) return '';
 
-  const chave = (openaiKey || '').trim();
-  if (!chave) {
-    return baseLimpa;
-  }
+  const openaiKey =
+    typeof opcoes === 'string'
+      ? opcoes.trim()
+      : (opcoes?.openaiKey || process.env.OPENAI_API_KEY || '').trim();
+  const geminiKey =
+    typeof opcoes === 'object' && opcoes !== null
+      ? (opcoes.geminiKey || process.env.GEMINI_API_KEY || '').trim()
+      : (process.env.GEMINI_API_KEY || '').trim();
 
-  try {
-    const promptSistema = `Você é um revisor legislativo oficial da Câmara Municipal de Itapoá-SC preparando o texto de uma proposição para leitura em voz alta por TTS em plenário.
-Regras obrigatórias:
-1. Remova textos tachados, cabeçalhos repetitivos, rodapés, e carimbos de assinatura digital (ICP-Brasil, códigos verificadores).
-2. Converta tabelas (como quadros de dotações orçamentárias) em prosa corrida natural para leitura em voz alta.
-3. Escreva números de leis/requerimentos, datas, valores monetários (R$), artigos (Art.), parágrafos (§) e incisos romanos por extenso para que a voz sintética leia com perfeição.
-4. Mantenha fidelidade absoluta ao conteúdo jurídico e legislativo original. Retorne APENAS o texto pronto para leitura, sem comentários adicionais.`;
-
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${chave}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        temperature: 0.1,
-        messages: [
-          { role: 'system', content: promptSistema },
-          { role: 'user', content: textoOriginal.slice(0, 12000) },
-        ],
-      }),
-    });
-
-    if (!res.ok) {
-      return baseLimpa;
+  // 1. Prioriza Google Gemini (2.5 Flash) se configurado
+  if (geminiKey) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
+          geminiKey
+        )}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            systemInstruction: {
+              parts: [{ text: PROMPT_SISTEMA_REVISAO_LEGISLATIVA }],
+            },
+            contents: [
+              {
+                role: 'user',
+                parts: [{ text: textoOriginal.slice(0, 20000) }],
+              },
+            ],
+            generationConfig: {
+              temperature: 0.1,
+            },
+          }),
+        }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const txtIa = String(
+          data.candidates?.[0]?.content?.parts?.[0]?.text || ''
+        ).trim();
+        if (txtIa) {
+          return limparTextoLegislativoDeterministico(txtIa);
+        }
+      }
+    } catch (err) {
+      console.warn('Falha no Gemini (texto), tentando alternativa:', err);
     }
-
-    const data = await res.json();
-    const respostaIA = String(data.choices?.[0]?.message?.content || '').trim();
-    return respostaIA || baseLimpa;
-  } catch (err) {
-    console.warn('Fallback para limpeza determinística (OpenAI indisponível):', err);
-    return baseLimpa;
   }
+
+  // 2. Alternativa: OpenAI GPT-4o-mini
+  if (openaiKey) {
+    try {
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${openaiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          temperature: 0.1,
+          messages: [
+            { role: 'system', content: PROMPT_SISTEMA_REVISAO_LEGISLATIVA },
+            { role: 'user', content: textoOriginal.slice(0, 15000) },
+          ],
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const respostaIA = String(
+          data.choices?.[0]?.message?.content || ''
+        ).trim();
+        if (respostaIA) {
+          return limparTextoLegislativoDeterministico(respostaIA);
+        }
+      }
+    } catch (err) {
+      console.warn('Fallback para limpeza determinística (OpenAI indisponível):', err);
+    }
+  }
+
+  return baseLimpa;
+}
+
+/**
+ * Revisão Multimodal Completa do Documento PDF:
+ * Quando há chave Google Gemini configurada e arquivo PDF disponível, envia o próprio PDF
+ * para o Gemini 2.5 Flash enxergar tabelas reais, textos tachados e carimbos visuais página a página!
+ */
+export async function revisarDocumentoPdfComIA(params: {
+  paginasAtuais: PaginaRoteiroLeitura[];
+  pdfUrl?: string | null;
+  geminiKey?: string;
+  openaiKey?: string;
+}): Promise<{
+  paginas: PaginaRoteiroLeitura[];
+  provedorIa: ProvedorRevisaoIa;
+}> {
+  const geminiKey = (params.geminiKey || process.env.GEMINI_API_KEY || '').trim();
+  const openaiKey = (params.openaiKey || process.env.OPENAI_API_KEY || '').trim();
+
+  const paginasParaLer = params.paginasAtuais.filter((p) => !p.pular);
+  if (paginasParaLer.length === 0) {
+    return { paginas: params.paginasAtuais, provedorIa: 'regras-locais' };
+  }
+
+  // 1. Modo Ouro: Gemini 2.5 Flash lendo o arquivo PDF visualmente (tabelas + tachados + carimbos)
+  if (geminiKey && params.pdfUrl) {
+    try {
+      const relPath = params.pdfUrl
+        .replace(/^\/api\/arquivos\//, 'uploads/')
+        .replace(/^\//, '');
+      const fullPath = path.join(process.cwd(), 'public', relPath);
+      const pdfBuf = await fs.readFile(fullPath);
+
+      // Limite seguro p/ inlineData (~18MB de PDF bruto)
+      if (pdfBuf.length <= 18 * 1024 * 1024) {
+        const numerosPaginas = paginasParaLer.map((p) => p.pagina_real).join(', ');
+        const promptPdf = `${PROMPT_SISTEMA_REVISAO_LEGISLATIVA}
+
+Analise visualmente o documento PDF anexado e prepare o texto de leitura APENAS para as seguintes páginas: [${numerosPaginas}].
+Retorne ESTRITAMENTE um array JSON válido no formato:
+[
+  { "pagina_real": 1, "texto": "texto limpo e fluente para leitura em voz alta desta página" }
+]
+Se uma página contiver exclusivamente assinaturas digitais ou carimbos sem conteúdo legislativo para ler, retorne "texto": "" para essa página.`;
+
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
+            geminiKey
+          )}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [
+                {
+                  role: 'user',
+                  parts: [
+                    {
+                      inlineData: {
+                        mimeType: 'application/pdf',
+                        data: pdfBuf.toString('base64'),
+                      },
+                    },
+                    { text: promptPdf },
+                  ],
+                },
+              ],
+              generationConfig: {
+                temperature: 0.1,
+                responseMimeType: 'application/json',
+              },
+            }),
+          }
+        );
+
+        if (res.ok) {
+          const data = await res.json();
+          const rawJson = String(
+            data.candidates?.[0]?.content?.parts?.[0]?.text || ''
+          ).trim();
+          const parsed = JSON.parse(rawJson);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const mapaPorPagina = new Map<number, string>();
+            for (const item of parsed) {
+              if (item && typeof item.pagina_real === 'number') {
+                mapaPorPagina.set(
+                  item.pagina_real,
+                  limparTextoLegislativoDeterministico(String(item.texto || ''))
+                );
+              }
+            }
+
+            const atualizadas = params.paginasAtuais.map((p) => {
+              if (p.pular) return p;
+              const novoTxt = mapaPorPagina.get(p.pagina_real);
+              if (novoTxt === undefined) return p;
+              return {
+                ...p,
+                texto: novoTxt,
+                pular: novoTxt.length === 0 ? true : p.pular,
+                audio_url: null,
+              };
+            });
+            return { paginas: atualizadas, provedorIa: 'gemini-pdf' };
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Falha na revisão multimodal PDF com Gemini, usando modo texto:', err);
+    }
+  }
+
+  // 2. Modo Texto com IA (Gemini ou OpenAI) ou Regras Determinísticas Locais
+  const temAlgumaChave = Boolean(geminiKey || openaiKey);
+  const provedorIa: ProvedorRevisaoIa = geminiKey
+    ? 'gemini-texto'
+    : openaiKey
+      ? 'openai'
+      : 'regras-locais';
+
+  const revisadas: PaginaRoteiroLeitura[] = [];
+  for (const p of params.paginasAtuais) {
+    if (p.pular) {
+      revisadas.push(p);
+    } else {
+      const novoTexto = temAlgumaChave
+        ? await revisarPaginaComIA(p.texto, { geminiKey, openaiKey })
+        : limparTextoLegislativoDeterministico(p.texto);
+      revisadas.push({
+        ...p,
+        texto: novoTexto,
+        audio_url: null,
+      });
+    }
+  }
+
+  return { paginas: revisadas, provedorIa };
 }
 
 export async function extrairPaginasDoPdfLocal(
@@ -228,7 +531,8 @@ export async function extrairPaginasDoPdfLocal(
   return paginasTextos.map((raw, idx) => {
     const limpo = limparTextoLegislativoDeterministico(raw);
     const pareceSoAssinatura =
-      limpo.length < 40 && /assinado|documento|verificador/i.test(raw);
+      limpo.length < 45 &&
+      /assinado|documento|verificador|autenticidade|icp-brasil/i.test(raw);
     return {
       pagina_real: idx + 1,
       texto: limpo || raw.trim(),
@@ -305,7 +609,6 @@ function montarUrlGoogleTts(bloco: string, varianteVoz: string): string {
   if (varianteVoz === 'google-pt') {
     return `https://translate.google.com/translate_tts?ie=UTF-8&tl=pt-PT&client=tw-ob&ttsspeed=1&q=${q}`;
   }
-  // Padrão: Google Feminina Brasil Fluida
   return `https://translate.google.com/translate_tts?ie=UTF-8&tl=pt-BR&client=tw-ob&ttsspeed=1&q=${q}`;
 }
 
@@ -345,7 +648,6 @@ export async function gerarAudioTtsPagina(params: {
     : usarOpenai
       ? 'openai'
       : 'google';
-  // Velocidade de síntese da voz Google Cloud (mesma do leitor antigo)
   const SPEAKING_RATE_GCLOUD = 1.2;
 
   const hash = crypto
@@ -362,7 +664,7 @@ export async function gerarAudioTtsPagina(params: {
   const caminhoJson = `${caminhoCompleto}.json`;
   const urlPublica = `/api/arquivos/audios/${nomeArquivo}`;
 
-  // Verifica cache determinístico em disco
+  // Verifica cache determinístico em disco (baseado no hash do texto + voz)
   try {
     const stat = await fs.stat(caminhoCompleto);
     if (stat.size > 100) {
@@ -456,8 +758,7 @@ export async function gerarAudioTtsPagina(params: {
     }
   }
 
-  // 2. Vozes Gratuitas Google TTS (Feminina Brasil / Solene / Clara / Clássica)
-  // Busca em lotes paralelos de 6 blocos e constrói o mapa exato de sincronia de tempo por frase!
+  // 2. Vozes Gratuitas Google TTS (Reserva)
   const blocos = dividirTextoEmBlocosComOffset(textoLimpo, 165);
   const buffersPorBloco: { buf: Buffer; fracTextoFim: number }[] = [];
 

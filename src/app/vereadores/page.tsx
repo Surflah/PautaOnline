@@ -30,7 +30,12 @@ export default function VereadoresPage() {
   const [nomeNovo, setNomeNovo] = useState('');
   const [tratamentoNovo, setTratamentoNovo] = useState<'Vereador' | 'Vereadora'>('Vereador');
 
-  // Estado OpenAI
+  // Estado IA (Google Gemini + OpenAI)
+  const [geminiConfigurada, setGeminiConfigurada] = useState(false);
+  const [geminiMascarada, setGeminiMascarada] = useState('');
+  const [chaveGeminiInput, setChaveGeminiInput] = useState('');
+  const [testandoGemini, setTestandoGemini] = useState(false);
+
   const [openaiConfigurada, setOpenaiConfigurada] = useState(false);
   const [openaiMascarada, setOpenaiMascarada] = useState('');
   const [chaveInput, setChaveInput] = useState('');
@@ -55,6 +60,8 @@ export default function VereadoresPage() {
         setVereadores(data.vereadores);
         setOpenaiConfigurada(Boolean(data.openaiConfigurada));
         setOpenaiMascarada(data.openaiMascarada || '');
+        setGeminiConfigurada(Boolean(data.geminiConfigurada));
+        setGeminiMascarada(data.geminiMascarada || '');
       }
     } finally {
       setCarregando(false);
@@ -151,6 +158,46 @@ export default function VereadoresPage() {
       setEditando(null);
       setFeedback({ tipo: 'sucesso', texto: 'Dados do parlamentar atualizados!' });
       carregarDados();
+    }
+  }
+
+  async function handleSalvarGemini(e: React.FormEvent) {
+    e.preventDefault();
+    const res = await fetch('/api/vereadores', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ acao: 'salvar_gemini', chave: chaveGeminiInput }),
+    });
+    if (res.ok) {
+      setChaveGeminiInput('');
+      setFeedback({
+        tipo: 'sucesso',
+        texto: 'Chave do Google Gemini salva com segurança no servidor!',
+      });
+      carregarDados();
+    }
+  }
+
+  async function handleTestarGemini() {
+    setTestandoGemini(true);
+    setFeedback(null);
+    try {
+      const res = await fetch('/api/vereadores', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ acao: 'testar_gemini', chave: chaveGeminiInput }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        setFeedback({ tipo: 'sucesso', texto: data.message });
+      } else {
+        setFeedback({
+          tipo: 'erro',
+          texto: data.error || 'Falha ao validar chave no Google Gemini.',
+        });
+      }
+    } finally {
+      setTestandoGemini(false);
     }
   }
 
@@ -303,59 +350,114 @@ export default function VereadoresPage() {
             </form>
           </section>
 
-          {/* Card Chave OpenAI + TTS */}
-          <section className="lg:col-span-2 bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
+          {/* Card Chaves IA (Google Gemini PDF + OpenAI) */}
+          <section className="lg:col-span-2 bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-5">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2.5">
                 <Sparkles className="w-5 h-5 text-violet-600" />
                 <h2 className="text-base font-extrabold text-slate-900">
-                  Configuração da Inteligência Artificial (OpenAI GPT + Voz TTS)
+                  Inteligência Artificial para Revisão de PDFs, Tabelas e Números
                 </h2>
               </div>
-              <span
-                className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold ${
-                  openaiConfigurada
-                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                    : 'bg-amber-50 text-amber-800 border border-amber-200'
-                }`}
-              >
-                <KeyRound className="w-3.5 h-3.5" />
-                <span>
-                  {openaiConfigurada
-                    ? `Chave Ativa (${openaiMascarada})`
-                    : 'Usando Voz Google (Sem Chave OpenAI)'}
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold ${
+                    geminiConfigurada
+                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                      : 'bg-amber-50 text-amber-800 border border-amber-200'
+                  }`}
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  <span>
+                    {geminiConfigurada
+                      ? `Gemini Ativo (${geminiMascarada})`
+                      : 'Gemini Não Configurado'}
+                  </span>
                 </span>
-              </span>
+                {openaiConfigurada && (
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                    <KeyRound className="w-3.5 h-3.5" />
+                    <span>OpenAI ({openaiMascarada})</span>
+                  </span>
+                )}
+              </div>
             </div>
 
-            <p className="text-sm text-slate-600 leading-relaxed">
-              A chave da OpenAI (<code className="font-mono text-xs bg-slate-100 px-1.5 py-0.5 rounded">sk-...</code>) é utilizada para a <strong>Revisão em Lote de Leituras</strong> (limpeza de carimbos ICP-Brasil, conversão de tabelas orçamentárias e números por extenso) e para a <strong>Voz Neural da OpenAI</strong> no Teleprompter PDF. Caso não configurada, o sistema utiliza automaticamente a voz gratuita do Google.
-            </p>
+            {/* Opção 1: Google Gemini (Gratuita e lê PDFs/Tabelas visualmente) */}
+            <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
+              <div className="space-y-1">
+                <p className="text-xs font-extrabold uppercase tracking-wider text-emerald-700">
+                  ⭐ Recomendado e Gratuito — Google Gemini 2.5 Flash (Lê PDF e Tabelas)
+                </p>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  Enxerga o PDF original para transformar <strong>tabelas orçamentárias em texto corrido</strong>, ignorar <strong>textos tachados/riscados</strong> e escrever números/datas/valores por extenso. Crie gratuitamente em{' '}
+                  <a
+                    href="https://aistudio.google.com/apikey"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-blue-600 underline font-bold"
+                  >
+                    aistudio.google.com/apikey
+                  </a>
+                  .
+                </p>
+              </div>
+              <form onSubmit={handleSalvarGemini} className="flex flex-col sm:flex-row gap-2.5">
+                <input
+                  type="password"
+                  value={chaveGeminiInput}
+                  onChange={(e) => setChaveGeminiInput(e.target.value)}
+                  placeholder="AIzaSy..."
+                  aria-label="Chave da API Google Gemini"
+                  className="flex-1 px-4 py-2.5 rounded-xl border border-slate-300 bg-white font-mono text-sm text-slate-900"
+                />
+                <button
+                  type="submit"
+                  className="min-h-[44px] px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs sm:text-sm transition-all cursor-pointer shrink-0"
+                >
+                  Salvar Gemini
+                </button>
+                <button
+                  type="button"
+                  onClick={handleTestarGemini}
+                  disabled={testandoGemini}
+                  className="min-h-[44px] px-4 py-2.5 rounded-xl bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 font-bold text-xs sm:text-sm transition-all cursor-pointer shrink-0"
+                >
+                  {testandoGemini ? 'Testando...' : 'Testar Gemini'}
+                </button>
+              </form>
+            </div>
 
-            <form onSubmit={handleSalvarOpenai} className="flex flex-col sm:flex-row gap-3 pt-1">
-              <input
-                type="password"
-                value={chaveInput}
-                onChange={(e) => setChaveInput(e.target.value)}
-                placeholder="sk-proj-..."
-                aria-label="Chave da API OpenAI"
-                className="flex-1 px-4 py-3 rounded-xl border border-slate-300 font-mono text-sm text-slate-900"
-              />
-              <button
-                type="submit"
-                className="min-h-[48px] px-5 py-3 rounded-xl bg-violet-600 hover:bg-violet-700 text-white font-bold text-sm transition-all cursor-pointer shrink-0"
-              >
-                Salvar Chave
-              </button>
-              <button
-                type="button"
-                onClick={handleTestarOpenai}
-                disabled={testandoOpenai}
-                className="min-h-[48px] px-5 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-sm transition-all cursor-pointer shrink-0"
-              >
-                {testandoOpenai ? 'Testando...' : 'Testar Conexão'}
-              </button>
-            </form>
+            {/* Opção 2: OpenAI (Opcional) */}
+            <div className="space-y-2">
+              <p className="text-xs font-bold text-slate-500">
+                Opcional — Chave OpenAI (<code className="font-mono">sk-...</code>) para GPT-4o-mini / Vozes OpenAI:
+              </p>
+              <form onSubmit={handleSalvarOpenai} className="flex flex-col sm:flex-row gap-2.5">
+                <input
+                  type="password"
+                  value={chaveInput}
+                  onChange={(e) => setChaveInput(e.target.value)}
+                  placeholder="sk-proj-..."
+                  aria-label="Chave da API OpenAI"
+                  className="flex-1 px-4 py-2.5 rounded-xl border border-slate-300 font-mono text-sm text-slate-900"
+                />
+                <button
+                  type="submit"
+                  className="min-h-[44px] px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-white font-bold text-xs sm:text-sm transition-all cursor-pointer shrink-0"
+                >
+                  Salvar OpenAI
+                </button>
+                <button
+                  type="button"
+                  onClick={handleTestarOpenai}
+                  disabled={testandoOpenai}
+                  className="min-h-[44px] px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs sm:text-sm transition-all cursor-pointer shrink-0"
+                >
+                  {testandoOpenai ? 'Testando...' : 'Testar OpenAI'}
+                </button>
+              </form>
+            </div>
 
             <div className="p-3.5 rounded-xl bg-amber-50/80 border border-amber-200/80 text-xs text-amber-900 flex items-start gap-2.5">
               <Crown className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />

@@ -35,6 +35,7 @@ export async function GET(
       sessaoId: sessao.id,
       sessaoNome: sessao.nome,
       estado,
+      serverTime: Date.now(),
     });
   } catch (err) {
     console.error('Erro em GET /api/sessoes/[id]/leitura-sync:', err);
@@ -63,8 +64,10 @@ export async function POST(
       maxScroll: Number(body.maxScroll || 0),
       audioUrl: body.audioUrl ? String(body.audioUrl) : null,
       isPlaying: Boolean(body.isPlaying),
+      tocarNoTelao: body.tocarNoTelao !== false,
       currentTime: Number(body.currentTime || 0),
-      playbackRate: Number(body.playbackRate || 1.15),
+      playbackRate: Number(body.playbackRate || 1.0),
+      volumeBoost: Number(body.volumeBoost || 1.7),
       updatedAt: Date.now(),
     };
 
@@ -75,7 +78,7 @@ export async function POST(
       },
     });
 
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, serverTime: payload.updatedAt });
   } catch (err) {
     console.error('Erro em POST /api/sessoes/[id]/leitura-sync:', err);
     return NextResponse.json({ error: 'Erro ao gravar sync de leitura' }, { status: 500 });

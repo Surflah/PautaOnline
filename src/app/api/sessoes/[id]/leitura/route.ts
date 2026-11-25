@@ -2,13 +2,23 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import {
   extrairPaginasDoPdfLocal,
-  revisarPaginaComIA,
+  revisarDocumentoPdfComIA,
   gerarAudioTtsPagina,
   PaginaRoteiroLeitura,
   VOZES_TTS_DISPONIVEIS,
   VOZ_PADRAO,
 } from '@/services/ia-leitura.service';
 import { registrarAuditoria } from '@/lib/auth';
+
+async function obterChavesIa() {
+  const [geminiCfg, openaiCfg] = await Promise.all([
+    prisma.configuracao.findUnique({ where: { chave: 'gemini_key' } }),
+    prisma.configuracao.findUnique({ where: { chave: 'openai_key' } }),
+  ]);
+  const geminiKey = (geminiCfg?.valor || process.env.GEMINI_API_KEY || '').trim();
+  const openaiKey = (openaiCfg?.valor || process.env.OPENAI_API_KEY || '').trim();
+  return { geminiKey, openaiKey };
+}
 
 export async function GET(
   req: NextRequest,
@@ -54,7 +64,6 @@ export async function GET(
         });
       }
 
-      // Fallback se não tiver PDF: usa a própria ementa como Página 1
       const paginasEmenta: PaginaRoteiroLeitura[] = [
         {
           pagina_real: 1,
@@ -70,14 +79,17 @@ export async function GET(
       });
     }
 
-    const sessao = await prisma.sessao.findUnique({
-      where: { id: sessaoId },
-      include: {
-        itens: {
-          orderBy: { numero: 'asc' },
+    const [sessao, chaves] = await Promise.all([
+      prisma.sessao.findUnique({
+        where: { id: sessaoId },
+        include: {
+          itens: {
+            orderBy: { numero: 'asc' },
+          },
         },
-      },
-    });
+      }),
+      obterChavesIa(),
+    ]);
 
     if (!sessao) {
       return NextResponse.json({ error: 'Sessão não encontrada.' }, { status: 404 });
@@ -90,6 +102,10 @@ export async function GET(
       },
       itens: sessao.itens,
       vozes: VOZES_TTS_DISPONIVEIS,
+      iaStatus: {
+        geminiAtivo: Boolean(chaves.geminiKey),
+        openaiAtivo: Boolean(chaves.openaiKey),
+      },
     });
   } catch (err) {
     console.error('Erro em GET /api/sessoes/[id]/leitura:', err);
@@ -107,37 +123,41 @@ export async function POST(
     const body = await req.json();
     const acao = String(body.acao || '');
 
-    const openaiCfg = await prisma.configuracao.findUnique({
-      where: { chave: 'openai_key' },
-    });
-    const openaiKey = openaiCfg?.valor || '';
+    const { geminiKey, openaiKey } = await obterChavesIa();
 
     if (acao === 'revisar_ia') {
+      const pautaId = Number(body.pautaId || 0);
       const paginas: PaginaRoteiroLeitura[] = Array.isArray(body.paginas)
         ? body.paginas
         : [];
-      const revisadas: PaginaRoteiroLeitura[] = [];
 
-      for (const p of paginas) {
-        if (p.pular) {
-          revisadas.push(p);
-        } else {
-          const novoTexto = await revisarPaginaComIA(p.texto, openaiKey);
-          revisadas.push({
-            ...p,
-            texto: novoTexto,
-            audio_url: null, // força regenerar áudio com texto novo
-          });
-        }
-      }
+      const item = pautaId
+        ? await prisma.pautaItem.findUnique({ where: { id: pautaId } })
+        : null;
 
-      return NextResponse.json({ ok: true, paginas: revisadas });
+      const { paginas: revisadas, provedorIa } = await revisarDocumentoPdfComIA({
+        paginasAtuais: paginas,
+        pdfUrl: item?.pdfUrl || null,
+        geminiKey,
+        openaiKey,
+      });
+
+      return NextResponse.json({
+        ok: true,
+        paginas: revisadas,
+        provedorIa,
+      });
     }
 
     if (acao === 'salvar_roteiro') {
       const pautaId = Number(body.pautaId);
       const paginas: PaginaRoteiroLeitura[] = Array.isArray(body.paginas)
-        ? body.paginas
+        ? body.paginas.map((p: PaginaRoteiroLeitura) => ({
+            pagina_real: Number(p.pagina_real),
+            texto: String(p.texto || '').trim(),
+            pular: Boolean(p.pular),
+            audio_url: null, // invalida sempre audio_url antigo ao salvar edição
+          }))
         : [];
 
       await prisma.pautaItem.update({
@@ -155,7 +175,7 @@ export async function POST(
         detalhes: `${paginas.length} páginas salvas no roteiro de leitura (Sessão #${sessaoId})`,
       });
 
-      return NextResponse.json({ ok: true });
+      return NextResponse.json({ ok: true, paginas });
     }
 
     if (acao === 'gerar_audio') {
@@ -172,7 +192,6 @@ export async function POST(
         openaiKey,
       });
 
-      // Atualiza audio_url no JSON salvo do item, se existir
       const item = await prisma.pautaItem.findUnique({ where: { id: pautaId } });
       if (item?.paginasRevisadasJson) {
         try {

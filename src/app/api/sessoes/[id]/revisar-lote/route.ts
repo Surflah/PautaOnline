@@ -3,7 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { isElegivelParaRevisaoIA } from '@/core/regimento';
 import {
   extrairPaginasDoPdfLocal,
-  revisarPaginaComIA,
+  revisarDocumentoPdfComIA,
 } from '@/services/ia-leitura.service';
 import { registrarAuditoria } from '@/lib/auth';
 
@@ -15,14 +15,18 @@ export async function GET(
     const { id } = await context.params;
     const sessaoId = Number(id);
 
-    const sessao = await prisma.sessao.findUnique({
-      where: { id: sessaoId },
-      include: {
-        itens: {
-          orderBy: { numero: 'asc' },
+    const [sessao, geminiCfg, openaiCfg] = await Promise.all([
+      prisma.sessao.findUnique({
+        where: { id: sessaoId },
+        include: {
+          itens: {
+            orderBy: { numero: 'asc' },
+          },
         },
-      },
-    });
+      }),
+      prisma.configuracao.findUnique({ where: { chave: 'gemini_key' } }),
+      prisma.configuracao.findUnique({ where: { chave: 'openai_key' } }),
+    ]);
 
     if (!sessao) {
       return NextResponse.json({ error: 'Sessão não encontrada.' }, { status: 404 });
@@ -60,6 +64,10 @@ export async function GET(
     return NextResponse.json({
       sessao: { id: sessao.id, nome: sessao.nome },
       itens: itensMapeados,
+      iaStatus: {
+        geminiAtivo: Boolean((geminiCfg?.valor || process.env.GEMINI_API_KEY || '').trim()),
+        openaiAtivo: Boolean((openaiCfg?.valor || process.env.OPENAI_API_KEY || '').trim()),
+      },
     });
   } catch (err) {
     console.error('Erro em GET /api/sessoes/[id]/revisar-lote:', err);
@@ -77,8 +85,9 @@ export async function POST(
     const body = await req.json();
     const pautaId = Number(body.pautaId);
 
-    const [item, openaiCfg] = await Promise.all([
+    const [item, geminiCfg, openaiCfg] = await Promise.all([
       prisma.pautaItem.findUnique({ where: { id: pautaId } }),
+      prisma.configuracao.findUnique({ where: { chave: 'gemini_key' } }),
       prisma.configuracao.findUnique({ where: { chave: 'openai_key' } }),
     ]);
 
@@ -91,20 +100,15 @@ export async function POST(
     }
 
     const paginasExtraidas = await extrairPaginasDoPdfLocal(item.pdfUrl);
-    const chaveOpenai = openaiCfg?.valor || '';
+    const geminiKey = (geminiCfg?.valor || process.env.GEMINI_API_KEY || '').trim();
+    const openaiKey = (openaiCfg?.valor || process.env.OPENAI_API_KEY || '').trim();
 
-    const paginasRevisadas = [];
-    for (const p of paginasExtraidas) {
-      if (p.pular) {
-        paginasRevisadas.push(p);
-      } else {
-        const textoLimpo = await revisarPaginaComIA(p.texto, chaveOpenai);
-        paginasRevisadas.push({
-          ...p,
-          texto: textoLimpo,
-        });
-      }
-    }
+    const { paginas: paginasRevisadas, provedorIa } = await revisarDocumentoPdfComIA({
+      paginasAtuais: paginasExtraidas,
+      pdfUrl: item.pdfUrl,
+      geminiKey,
+      openaiKey,
+    });
 
     await prisma.pautaItem.update({
       where: { id: pautaId },
@@ -118,18 +122,18 @@ export async function POST(
       acao: 'REVISAR_LEITURA_IA',
       entidade: 'PautaItem',
       entidadeId: pautaId,
-      detalhes: `${paginasRevisadas.length} páginas revisadas para '${item.titulo}'`,
+      detalhes: `Revisão em lote (${provedorIa}): ${item.titulo} (${paginasRevisadas.length} pág.)`,
     });
 
     return NextResponse.json({
       ok: true,
-      pautaId,
-      totalPaginas: paginasRevisadas.length,
+      paginasProcessadas: paginasRevisadas.length,
+      provedorIa,
     });
   } catch (err) {
     console.error('Erro em POST /api/sessoes/[id]/revisar-lote:', err);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Erro ao revisar PDF com IA.' },
+      { error: 'Falha ao revisar documento com IA.' },
       { status: 500 }
     );
   }

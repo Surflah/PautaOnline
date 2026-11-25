@@ -22,6 +22,8 @@ import {
   ArrowLeft,
   AlertTriangle,
   ListOrdered,
+  KeyRound,
+  CheckCircle2,
 } from 'lucide-react';
 
 interface PautaItemLeitura {
@@ -63,6 +65,17 @@ interface VozNativaSistema {
   lang: string;
 }
 
+type ModoSaidaAudio = 'ambos' | 'obs' | 'local';
+
+function hashTextoRapido(s: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(16);
+}
+
 function normalizarTxt(s: string): string {
   return (s || '')
     .toLowerCase()
@@ -97,17 +110,29 @@ export default function PainelProLeituraPage() {
   const [sidebarAberta, setSidebarAberta] = useState(true);
   const [barraTopoVisivel, setBarraTopoVisivel] = useState(true);
 
-  // Vozes gratuitas selecionadas por padrão (Google Feminina Brasil)
+  // Voz padrão Andressa (Google Cloud TTS) e saída de áudio para o Telão OBS
   const [vozTts, setVozTts] = useState('gcloud:pt-BR-Standard-D');
   const [vozesNativasPt, setVozesNativasPt] = useState<VozNativaSistema[]>([]);
   const [playbackRate, setPlaybackRate] = useState(1.0);
-  const [velocidadeScrollMult, setVelocidadeScrollMult] = useState(1.0); // 1.0 = Sincronia exata com a fala
+  const [velocidadeScrollMult, setVelocidadeScrollMult] = useState(1.0);
   const [modoRolagem, setModoRolagem] = useState<'linha' | 'continuo'>('linha');
   const [volumeBoost, setVolumeBoost] = useState(1.7);
+  const [saidaAudio, setSaidaAudio] = useState<ModoSaidaAudio>('ambos');
 
-  // Estado de Reprodução e Auto-Scroll Linha a Linha
+  // Estado de IA para Revisão de PDFs e Tabelas
+  const [iaStatus, setIaStatus] = useState<{
+    geminiAtivo: boolean;
+    openaiAtivo: boolean;
+  }>({ geminiAtivo: false, openaiAtivo: false });
+  const [mostrarConfigIaModal, setMostrarConfigIaModal] = useState(false);
+  const [chaveGeminiModal, setChaveGeminiModal] = useState('');
+  const [salvandoChaveIaModal, setSalvandoChaveIaModal] = useState(false);
+  const [avisoModalPrep, setAvisoModalPrep] = useState<string>('');
+
+  // Estado de Reprodução, Buffer de Áudios e Auto-Scroll Linha a Linha
   const [isPlaying, setIsPlaying] = useState(false);
   const [gerandoAudio, setGerandoAudio] = useState(false);
+  const [audiosProntosCount, setAudiosProntosCount] = useState(0);
   const [progressoAudioPct, setProgressoAudioPct] = useState(0);
   const [rolagemManualAtiva, setRolagemManualAtiva] = useState(false);
   const [mostrarGcFlutuante, setMostrarGcFlutuante] = useState(false);
@@ -133,7 +158,24 @@ export default function PainelProLeituraPage() {
   const gainNodeRef = useRef<GainNode | null>(null);
   const sourceNodeConnectedRef = useRef(false);
 
-  // Cache de áudios e mapas de tempo por página/voz
+  // Refs sempre atualizadas para evitar closures antigas em callbacks assíncronos
+  const paginasRef = useRef<PaginaRoteiro[]>([]);
+  const paginaIdxRef = useRef<number>(0);
+  const itemAtivoRef = useRef<PautaItemLeitura | null>(null);
+  const audioUrlAtivoRef = useRef<string | null>(null);
+  const versaoRoteiroRef = useRef<number>(0);
+
+  useEffect(() => {
+    paginasRef.current = paginas;
+  }, [paginas]);
+  useEffect(() => {
+    paginaIdxRef.current = paginaIdx;
+  }, [paginaIdx]);
+  useEffect(() => {
+    itemAtivoRef.current = itemAtivo;
+  }, [itemAtivo]);
+
+  // Cache de áudios por hash completo do texto + página + voz
   const cacheAudioPaginasRef = useRef<
     Record<
       string,
@@ -158,6 +200,34 @@ export default function PainelProLeituraPage() {
   const renderSeqRef = useRef<number>(0);
 
   const paginaAtualObj = paginas[paginaIdx] || null;
+
+  // Carrega preferência de saída de áudio salva neste computador
+  useEffect(() => {
+    try {
+      const salvo = window.localStorage.getItem('pauta_saida_audio');
+      if (salvo === 'obs' || salvo === 'ambos' || salvo === 'local') {
+        setSaidaAudio(salvo);
+      }
+    } catch {
+      // Ignora
+    }
+  }, []);
+
+  // Aplica mudo local quando operador escolhe "Só no Telão OBS (Mudo aqui)"
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('pauta_saida_audio', saidaAudio);
+    } catch {
+      // Ignora
+    }
+    const silenciarLocal = saidaAudio === 'obs';
+    if (audioRef.current) {
+      audioRef.current.muted = silenciarLocal;
+    }
+    if (gainNodeRef.current) {
+      gainNodeRef.current.gain.value = silenciarLocal ? 0 : volumeBoost;
+    }
+  }, [saidaAudio, volumeBoost]);
 
   // Garante detecção do PDF.js mesmo em navegação client-side
   useEffect(() => {
@@ -192,7 +262,201 @@ export default function PainelProLeituraPage() {
     window.speechSynthesis.onvoiceschanged = carregarVozesSistema;
   }, []);
 
-  // Carrega lista de itens da sessão
+  const recalcularAudiosProntos = useCallback(
+    (pautaId: number, listaPags: PaginaRoteiro[], voz: string) => {
+      let prontos = 0;
+      for (const p of listaPags) {
+        if (p.pular) continue;
+        const k = `${pautaId}_${p.pagina_real}_${voz}_${hashTextoRapido(
+          (p.texto || '').trim()
+        )}`;
+        if (cacheAudioPaginasRef.current[k]) prontos++;
+      }
+      setAudiosProntosCount(prontos);
+    },
+    []
+  );
+
+  const prepararAudioEmBackground = useCallback(
+    async (
+      pautaId: number,
+      pag: PaginaRoteiro,
+      voz: string,
+      listaReferencia?: PaginaRoteiro[]
+    ) => {
+      const textoLimpo = (pag?.texto || '').trim();
+      if (!pag || pag.pular || !textoLimpo || voz.startsWith('nativa:')) {
+        return null;
+      }
+
+      const chaveCache = `${pautaId}_${pag.pagina_real}_${voz}_${hashTextoRapido(
+        textoLimpo
+      )}`;
+      if (cacheAudioPaginasRef.current[chaveCache]) {
+        recalcularAudiosProntos(
+          pautaId,
+          listaReferencia || paginasRef.current,
+          voz
+        );
+        return cacheAudioPaginasRef.current[chaveCache];
+      }
+
+      try {
+        const res = await fetch(`/api/sessoes/${sessaoId}/leitura`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            acao: 'gerar_audio',
+            pautaId,
+            pagina: pag.pagina_real,
+            texto: textoLimpo,
+            voz,
+          }),
+        });
+        const data = await res.json();
+        if (res.ok && data.audioUrl) {
+          const entrada = {
+            audioUrl: data.audioUrl,
+            provedor: data.provedor || 'gcloud',
+            vozUsada: data.vozUsada || voz,
+            mapaTempo: Array.isArray(data.mapaTempo)
+              ? data.mapaTempo
+              : [
+                  { fracAudio: 0, fracTexto: 0 },
+                  { fracAudio: 1, fracTexto: 1 },
+                ],
+          };
+          cacheAudioPaginasRef.current[chaveCache] = entrada;
+          recalcularAudiosProntos(
+            pautaId,
+            listaReferencia || paginasRef.current,
+            voz
+          );
+          return entrada;
+        }
+      } catch {
+        // Ignora erro de pré-carga
+      }
+      return null;
+    },
+    [sessaoId, recalcularAudiosProntos]
+  );
+
+  const gerarTodosAudiosBackground = useCallback(
+    async (
+      pautaId: number,
+      listaPags: PaginaRoteiro[],
+      voz: string,
+      versaoEsperada: number
+    ) => {
+      if (voz.startsWith('nativa:')) return;
+      for (const pag of listaPags) {
+        if (versaoRoteiroRef.current !== versaoEsperada) return;
+        if (pag.pular || !pag.texto.trim()) continue;
+        await prepararAudioEmBackground(pautaId, pag, voz, listaPags);
+      }
+    },
+    [prepararAudioEmBackground]
+  );
+
+  // Envio imediato de estado para o Telão OBS (sem esperar o próximo ciclo de 400ms)
+  const enviarSyncImediato = useCallback(
+    async (overrides?: {
+      isPlaying?: boolean;
+      audioUrl?: string | null;
+      pagina?: number;
+      currentTime?: number;
+    }) => {
+      const item = itemAtivoRef.current;
+      if (!sessaoId || !item) return;
+
+      const container = viewportContainerRef.current;
+      const maxScroll = container
+        ? Math.max(1, container.scrollHeight - container.clientHeight)
+        : 1;
+      const scrollY = container ? container.scrollTop : 0;
+      const scrollRatio = Math.min(1, Math.max(0, scrollY / maxScroll));
+      const pagAtual =
+        paginasRef.current[paginaIdxRef.current]?.pagina_real || 1;
+
+      try {
+        await fetch(`/api/sessoes/${sessaoId}/leitura-sync`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            pautaId: item.id,
+            titulo: item.titulo,
+            autor: item.autor,
+            etapa: item.votacaoEtapa,
+            pdfUrl: item.pdfUrl,
+            pagina: overrides?.pagina ?? pagAtual,
+            scrollRatio,
+            scrollY,
+            maxScroll,
+            audioUrl:
+              overrides?.audioUrl !== undefined
+                ? overrides.audioUrl
+                : audioUrlAtivoRef.current,
+            isPlaying: overrides?.isPlaying ?? isPlaying,
+            tocarNoTelao: saidaAudio !== 'local',
+            currentTime:
+              overrides?.currentTime ?? (audioRef.current?.currentTime || 0),
+            playbackRate,
+            volumeBoost,
+          }),
+        });
+      } catch {
+        // Ignora erro transitório
+      }
+    },
+    [sessaoId, isPlaying, saidaAudio, playbackRate, volumeBoost]
+  );
+
+  const selecionarItemParaLeitura = useCallback(
+    async (item: PautaItemLeitura, ignoreCache = false) => {
+      pararAudio();
+      const novaVersao = ++versaoRoteiroRef.current;
+      setItemAtivo(item);
+      itemAtivoRef.current = item;
+      setPaginas([]);
+      paginasRef.current = [];
+      setPaginaIdx(0);
+      paginaIdxRef.current = 0;
+      setLinhaAtivaIdx(0);
+      setAudiosProntosCount(0);
+      setRolagemManualAtiva(false);
+      setProgressoAudioPct(0);
+      audioUrlAtivoRef.current = null;
+      setStatusFeedback('Carregando documento e extraindo linhas para leitura...');
+
+      const q = `/api/sessoes/${sessaoId}/leitura?pautaId=${item.id}${
+        ignoreCache ? '&ignoreCache=1' : ''
+      }`;
+      const res = await fetch(q, { cache: 'no-store' });
+      const data = await res.json();
+      if (res.ok && Array.isArray(data.paginas)) {
+        setPaginas(data.paginas);
+        paginasRef.current = data.paginas;
+        setPaginasEdicao(data.paginas);
+        const primeiraNaoPulada = data.paginas.findIndex(
+          (p: PaginaRoteiro) => !p.pular
+        );
+        const idxInicial = primeiraNaoPulada >= 0 ? primeiraNaoPulada : 0;
+        setPaginaIdx(idxInicial);
+        paginaIdxRef.current = idxInicial;
+        setStatusFeedback(
+          `Documento pronto (${data.paginas.length} pág.). Clique em "Ler Página" para iniciar.`
+        );
+
+        // Pré-gera áudio da 1ª página e demais em background
+        gerarTodosAudiosBackground(item.id, data.paginas, vozTts, novaVersao);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sessaoId, vozTts, gerarTodosAudiosBackground]
+  );
+
+  // Carrega lista de itens da sessão + status da IA
   useEffect(() => {
     async function init() {
       const res = await fetch(`/api/sessoes/${sessaoId}/leitura`, {
@@ -201,6 +465,12 @@ export default function PainelProLeituraPage() {
       const data = await res.json();
       if (!res.ok) return;
       setSessaoNome(data.sessao?.nome || '');
+      if (data.iaStatus) {
+        setIaStatus({
+          geminiAtivo: Boolean(data.iaStatus.geminiAtivo),
+          openaiAtivo: Boolean(data.iaStatus.openaiAtivo),
+        });
+      }
       const lista: PautaItemLeitura[] = data.itens || [];
       setItens(lista);
 
@@ -214,97 +484,22 @@ export default function PainelProLeituraPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessaoId]);
 
-  const prepararAudioEmBackground = useCallback(
-    async (pautaId: number, pag: PaginaRoteiro, voz: string) => {
-      if (!pag || pag.pular || voz.startsWith('nativa:')) return null;
-      const chaveCache = `${pautaId}_${pag.pagina_real}_${voz}_${pag.texto.length}`;
-      if (cacheAudioPaginasRef.current[chaveCache]) {
-        return cacheAudioPaginasRef.current[chaveCache];
-      }
-
-      try {
-        const res = await fetch(`/api/sessoes/${sessaoId}/leitura`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            acao: 'gerar_audio',
-            pautaId,
-            pagina: pag.pagina_real,
-            texto: pag.texto,
-            voz,
-          }),
-        });
-        const data = await res.json();
-        if (res.ok && data.audioUrl) {
-          const entrada = {
-            audioUrl: data.audioUrl,
-            provedor: data.provedor || 'google',
-            vozUsada: data.vozUsada || voz,
-            mapaTempo: Array.isArray(data.mapaTempo)
-              ? data.mapaTempo
-              : [
-                  { fracAudio: 0, fracTexto: 0 },
-                  { fracAudio: 1, fracTexto: 1 },
-                ],
-          };
-          cacheAudioPaginasRef.current[chaveCache] = entrada;
-          return entrada;
-        }
-      } catch {
-        // Ignora erro de pré-carga
-      }
-      return null;
-    },
-    [sessaoId]
-  );
-
-  const selecionarItemParaLeitura = useCallback(
-    async (item: PautaItemLeitura, ignoreCache = false) => {
-      pararAudio();
-      setItemAtivo(item);
-      setPaginas([]);
-      setPaginaIdx(0);
-      setLinhaAtivaIdx(0);
-      setRolagemManualAtiva(false);
-      setProgressoAudioPct(0);
-      setStatusFeedback('Carregando documento e extraindo linhas para leitura...');
-
-      const q = `/api/sessoes/${sessaoId}/leitura?pautaId=${item.id}${
-        ignoreCache ? '&ignoreCache=1' : ''
-      }`;
-      const res = await fetch(q, { cache: 'no-store' });
-      const data = await res.json();
-      if (res.ok && Array.isArray(data.paginas)) {
-        setPaginas(data.paginas);
-        setPaginasEdicao(data.paginas);
-        const primeiraNaoPulada = data.paginas.findIndex(
-          (p: PaginaRoteiro) => !p.pular
-        );
-        const idxInicial = primeiraNaoPulada >= 0 ? primeiraNaoPulada : 0;
-        setPaginaIdx(idxInicial);
-        setStatusFeedback(
-          `Documento pronto (${data.paginas.length} pág.). Clique em "Ler Página" para iniciar.`
-        );
-
-        // Pré-gera imediatamente o áudio da 1ª página legível para início instantâneo
-        if (data.paginas[idxInicial]) {
-          prepararAudioEmBackground(
-            item.id,
-            data.paginas[idxInicial],
-            vozTts
-          );
-        }
-      }
-    },
-    [sessaoId, vozTts, prepararAudioEmBackground]
-  );
-
   // Pré-carrega áudio sempre que mudar de página ou de voz
   useEffect(() => {
-    if (itemAtivo && paginaAtualObj && !paginaAtualObj.pular) {
-      prepararAudioEmBackground(itemAtivo.id, paginaAtualObj, vozTts);
+    if (itemAtivo && paginas.length > 0) {
+      recalcularAudiosProntos(itemAtivo.id, paginas, vozTts);
+      if (paginaAtualObj && !paginaAtualObj.pular) {
+        prepararAudioEmBackground(itemAtivo.id, paginaAtualObj, vozTts, paginas);
+      }
     }
-  }, [itemAtivo, paginaAtualObj, vozTts, prepararAudioEmBackground]);
+  }, [
+    itemAtivo,
+    paginas,
+    paginaAtualObj,
+    vozTts,
+    prepararAudioEmBackground,
+    recalcularAudiosProntos,
+  ]);
 
   // Renderiza a página do PDF e constrói as linhas ancoradas (Motor Linha a Linha)
   useEffect(() => {
@@ -349,7 +544,6 @@ export default function PainelProLeituraPage() {
         const containerWidth =
           viewportContainerRef.current?.clientWidth || 1000;
         const unscaled = page.getViewport({ scale: 1 });
-        // Preenche a largura útil do container para que a página tenha bastante altura vertical de rolagem
         const larguraAlvo = Math.max(720, Math.min(1120, containerWidth - 48));
         const scale = larguraAlvo / unscaled.width;
         const viewport = page.getViewport({ scale });
@@ -391,7 +585,6 @@ export default function PainelProLeituraPage() {
             viewport.transform,
             it.transform
           );
-          // Ignora texto vertical na margem
           if (Math.abs(tx[1]) > Math.abs(tx[0])) continue;
           const altura = Math.max(14, Math.hypot(tx[2], tx[3]) || 18);
           raw.push({
@@ -403,7 +596,6 @@ export default function PainelProLeituraPage() {
           });
         }
 
-        // Remove blocos de assinatura digital no final da página
         const sigYs = raw.filter((r) => r.sig).map((r) => r.y);
         if (sigYs.length > 0) {
           const cutoff = Math.min(...sigYs);
@@ -412,13 +604,11 @@ export default function PainelProLeituraPage() {
           }
         }
 
-        // Ordena de cima para baixo (e da esquerda para a direita na mesma linha)
         raw.sort((a, b) => {
           if (Math.abs(a.y - b.y) <= 6) return a.x - b.x;
           return a.y - b.y;
         });
 
-        // Agrupa itens na mesma coordenada Y em LINHAS VISUAIS DO PDF
         const linhasAgrupadas: {
           y: number;
           altura: number;
@@ -450,7 +640,6 @@ export default function PainelProLeituraPage() {
         const yMin = linhasAgrupadas[0].y;
         const ySpan = Math.max(1, pageContentBottomYRef.current - yMin);
 
-        // Casa cada linha do PDF com o texto falado (ou distribui proporcionalmente aos caracteres da linha)
         const textoFaladoNorm = normalizarTxt(paginaAtualObj.texto || '');
         const ancorasPorLinha: (number | null)[] = new Array(
           linhasAgrupadas.length
@@ -472,7 +661,6 @@ export default function PainelProLeituraPage() {
           }
         }
 
-        // Preenche frações monotônicas para TODAS as linhas da página (0..N-1)
         const tamanhos = linhasAgrupadas.map((l) =>
           Math.max(4, l.partes.join(' ').length)
         );
@@ -488,7 +676,6 @@ export default function PainelProLeituraPage() {
           acum += tamanhos[i];
           const fracCharFim = acum / totalCharsLinhas;
 
-          // Combina âncora exata do texto falado com a proporção de caracteres da linha
           const fracAncora = ancorasPorLinha[i];
           const fracInicio =
             fracAncora !== null
@@ -505,7 +692,6 @@ export default function PainelProLeituraPage() {
           });
         }
 
-        // Garante monotonicidade estrita entre linhas consecutivas
         for (let i = 0; i < linhasFinais.length; i++) {
           if (i === 0) {
             linhasFinais[i].fracInicio = 0;
@@ -564,9 +750,12 @@ export default function PainelProLeituraPage() {
     paginaAtualObj?.texto,
   ]);
 
-  // Configura Web Audio API GainNode para amplificação limpa de voz em plenário
+  // Configura Web Audio API GainNode para amplificação limpa de voz localmente (quando não mudo)
   function conectarGainNodeSeNecessario() {
     if (!audioRef.current) return;
+    audioRef.current.muted = saidaAudio === 'obs';
+    if (saidaAudio === 'obs') return;
+
     try {
       if (!audioCtxRef.current) {
         const AudioCtx =
@@ -597,12 +786,6 @@ export default function PainelProLeituraPage() {
   }
 
   useEffect(() => {
-    if (gainNodeRef.current) {
-      gainNodeRef.current.gain.value = volumeBoost;
-    }
-  }, [volumeBoost]);
-
-  useEffect(() => {
     if (audioRef.current) {
       audioRef.current.playbackRate = playbackRate;
     }
@@ -623,7 +806,6 @@ export default function PainelProLeituraPage() {
     };
   }, [isPlaying]);
 
-  // Converte o progresso bruto do áudio (0..1) na fração real do texto usando o mapa de blocos do Google TTS
   const converterAudioParaFracTexto = useCallback((progAudio: number): number => {
     const mapa = mapaTempoAtivoRef.current;
     if (!mapa || mapa.length < 2) return progAudio;
@@ -643,7 +825,6 @@ export default function PainelProLeituraPage() {
     return progAudio;
   }, []);
 
-  // Calcula a linha ativa do PDF e o alvo de scroll para o instante atual da leitura
   const calcularAlvoELinhaAtiva = useCallback(() => {
     const container = viewportContainerRef.current;
     if (!container) return null;
@@ -679,7 +860,6 @@ export default function PainelProLeituraPage() {
       };
     }
 
-    // Localiza exatamente qual linha do PDF está sendo lida neste instante
     let idxLinha = 0;
     for (let i = 0; i < linhas.length; i++) {
       if (f >= linhas[i].fracInicio && f <= linhas[i].fracFim) {
@@ -708,13 +888,11 @@ export default function PainelProLeituraPage() {
         linhaAtual.canvasY + tLinha * (proxLinha.canvasY - linhaAtual.canvasY);
     }
 
-    // Posiciona a linha falada na zona de foco ocular (~36% do topo da área de leitura)
     const linhaLeituraOffset = container.clientHeight * 0.36;
     const maxScroll = Math.max(
       0,
       container.scrollHeight - container.clientHeight
     );
-    // Soma o padding superior do container (24px)
     const scrollDesejado = Math.max(
       0,
       Math.min(maxScroll, yAlvoCanvas + 24 - linhaLeituraOffset)
@@ -746,7 +924,6 @@ export default function PainelProLeituraPage() {
           if (Math.abs(diff) < 0.5) {
             container.scrollTop = calc.scrollDesejado;
           } else {
-            // Salto suave linha a linha (easing 0.16)
             container.scrollTop += diff * 0.16;
           }
         }
@@ -756,7 +933,6 @@ export default function PainelProLeituraPage() {
 
     rafId = requestAnimationFrame(loopScroll);
 
-    // Mantém rolagem ativa mesmo se a aba ficar em segundo plano (ex.: OBS / projeção)
     const bgTimer = setInterval(() => {
       if (document.hidden && !rolagemManualAtiva) {
         const container = viewportContainerRef.current;
@@ -773,47 +949,18 @@ export default function PainelProLeituraPage() {
     };
   }, [isPlaying, rolagemManualAtiva, calcularAlvoELinhaAtiva]);
 
-  // Sincronização Master -> Slave a cada 500ms com o Telão de Leitura OBS
+  // Sincronização Master -> Slave contínua (a cada 400ms) com o Telão de Leitura OBS
   useEffect(() => {
     if (!sessaoId || !itemAtivo) return;
 
-    const timer = setInterval(async () => {
-      const container = viewportContainerRef.current;
-      const maxScroll = container
-        ? Math.max(1, container.scrollHeight - container.clientHeight)
-        : 1;
-      const scrollY = container ? container.scrollTop : 0;
-      const scrollRatio = Math.min(1, Math.max(0, scrollY / maxScroll));
-
-      try {
-        await fetch(`/api/sessoes/${sessaoId}/leitura-sync`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            pautaId: itemAtivo.id,
-            titulo: itemAtivo.titulo,
-            autor: itemAtivo.autor,
-            etapa: itemAtivo.votacaoEtapa,
-            pdfUrl: itemAtivo.pdfUrl,
-            pagina: paginaAtualObj?.pagina_real || 1,
-            scrollRatio,
-            scrollY,
-            maxScroll,
-            audioUrl: audioRef.current?.src || null,
-            isPlaying,
-            currentTime: audioRef.current?.currentTime || 0,
-            playbackRate,
-          }),
-        });
-      } catch {
-        // Ignora erro transitório
-      }
-    }, 500);
+    const timer = setInterval(() => {
+      enviarSyncImediato();
+    }, 400);
 
     return () => clearInterval(timer);
-  }, [sessaoId, itemAtivo, paginaAtualObj?.pagina_real, isPlaying, playbackRate]);
+  }, [sessaoId, itemAtivo, enviarSyncImediato]);
 
-  function pararAudio() {
+  function pararAudio(notificarObs = true) {
     if (audioRef.current) {
       audioRef.current.pause();
     }
@@ -822,25 +969,37 @@ export default function PainelProLeituraPage() {
     }
     usandoFalaNativaRef.current = false;
     setIsPlaying(false);
+    if (notificarObs) {
+      enviarSyncImediato({ isPlaying: false });
+    }
   }
 
-  async function tocarPagina(idxAlvo: number) {
-    if (!itemAtivo || !paginas[idxAlvo]) return;
-    const pagObj = paginas[idxAlvo];
+  async function tocarPagina(
+    idxAlvo: number,
+    listaPaginasOverride?: PaginaRoteiro[]
+  ) {
+    const item = itemAtivoRef.current;
+    const listaAtual = listaPaginasOverride || paginasRef.current;
+    if (!item || !listaAtual[idxAlvo]) return;
+    const pagObj = listaAtual[idxAlvo];
 
     if (pagObj.pular) {
-      if (idxAlvo + 1 < paginas.length) {
+      if (idxAlvo + 1 < listaAtual.length) {
         setPaginaIdx(idxAlvo + 1);
-        tocarPagina(idxAlvo + 1);
+        paginaIdxRef.current = idxAlvo + 1;
+        tocarPagina(idxAlvo + 1, listaAtual);
       }
       return;
     }
 
+    setPaginaIdx(idxAlvo);
+    paginaIdxRef.current = idxAlvo;
     setRolagemManualAtiva(false);
 
-    // Opção 1: Voz Nativa do Navegador/Sistema (Web Speech API com eventos de palavra em tempo real)
+    // Opção 1: Voz Nativa do Navegador/Sistema (apenas local)
     if (vozTts.startsWith('nativa:') && 'speechSynthesis' in window) {
-      pararAudio();
+      pararAudio(false);
+      audioUrlAtivoRef.current = null;
       const nomeVoz = vozTts.replace(/^nativa:/, '');
       const utter = new SpeechSynthesisUtterance(pagObj.texto);
       const vozObj = window.speechSynthesis
@@ -865,14 +1024,14 @@ export default function PainelProLeituraPage() {
       };
 
       setStatusFeedback(
-        `🔊 Lendo Pág. ${pagObj.pagina_real} — Voz Nativa (${nomeVoz})`
+        `🔊 Lendo Pág. ${pagObj.pagina_real} — Voz Local (${nomeVoz})`
       );
       setIsPlaying(true);
       window.speechSynthesis.speak(utter);
       return;
     }
 
-    // Opção 2: Vozes IA Servidor (Google Feminina Brasil Gratuita / OpenAI Neural)
+    // Opção 2: Vozes IA Servidor (Andressa Google Cloud / OpenAI / Google) -> Sai no Telão OBS!
     usandoFalaNativaRef.current = false;
     conectarGainNodeSeNecessario();
     setGerandoAudio(true);
@@ -882,9 +1041,10 @@ export default function PainelProLeituraPage() {
 
     try {
       const dadosAudio = await prepararAudioEmBackground(
-        itemAtivo.id,
+        item.id,
         pagObj,
-        vozTts
+        vozTts,
+        listaAtual
       );
 
       if (!dadosAudio || !dadosAudio.audioUrl) {
@@ -894,33 +1054,55 @@ export default function PainelProLeituraPage() {
       }
 
       mapaTempoAtivoRef.current = dadosAudio.mapaTempo;
+      audioUrlAtivoRef.current = dadosAudio.audioUrl;
+
+      const sufixoObs =
+        saidaAudio === 'obs'
+          ? ' • 📺 Saindo no Telão OBS (Mudo aqui)'
+          : saidaAudio === 'ambos'
+            ? ' • 📺 Sincronizado com Telão OBS'
+            : '';
 
       const labelProvedor =
         dadosAudio.provedor === 'openai'
-          ? `🔊 Voz Neural OpenAI (${dadosAudio.vozUsada}) — Pág. ${pagObj.pagina_real}`
+          ? `🔊 Voz Neural OpenAI (${dadosAudio.vozUsada}) — Pág. ${pagObj.pagina_real}${sufixoObs}`
           : dadosAudio.provedor === 'gcloud'
-            ? `🔊 ${dadosAudio.vozUsada === 'gcloud:pt-BR-Standard-D' ? 'Andressa' : dadosAudio.vozUsada.replace('gcloud:', '')} (Google Cloud) — Pág. ${pagObj.pagina_real} • sincronia por palavra`
-            : `🔊 Voz Google gratuita (${dadosAudio.vozUsada}) — Pág. ${pagObj.pagina_real}${
-                vozTts.startsWith('gcloud:') ? ' ⚠️ Google Cloud indisponível, usando reserva' : ''
-              }`;
+            ? `🔊 ${
+                dadosAudio.vozUsada === 'gcloud:pt-BR-Standard-D'
+                  ? 'Andressa'
+                  : dadosAudio.vozUsada.replace('gcloud:', '')
+              } (Google Cloud) — Pág. ${pagObj.pagina_real}${sufixoObs}`
+            : `🔊 Voz Google (${dadosAudio.vozUsada}) — Pág. ${pagObj.pagina_real}${sufixoObs}`;
       setStatusFeedback(labelProvedor);
 
       if (audioRef.current) {
+        audioRef.current.muted = saidaAudio === 'obs';
         audioRef.current.src = dadosAudio.audioUrl;
         audioRef.current.playbackRate = playbackRate;
         await audioRef.current.play();
         setIsPlaying(true);
+        enviarSyncImediato({
+          isPlaying: true,
+          audioUrl: dadosAudio.audioUrl,
+          pagina: pagObj.pagina_real,
+          currentTime: 0,
+        });
       }
 
       // Pré-carrega em background o áudio da próxima página legível
-      const proxIdx = paginas.findIndex((p, i) => i > idxAlvo && !p.pular);
+      const proxIdx = listaAtual.findIndex((p, i) => i > idxAlvo && !p.pular);
       if (proxIdx !== -1) {
-        prepararAudioEmBackground(itemAtivo.id, paginas[proxIdx], vozTts);
+        prepararAudioEmBackground(
+          item.id,
+          listaAtual[proxIdx],
+          vozTts,
+          listaAtual
+        );
       }
     } catch (err) {
       console.error('Erro ao reproduzir áudio:', err);
       setStatusFeedback(
-        '⚠️ Clique novamente em "Ler Página" para liberar o áudio no navegador.'
+        '⚠️ Clique novamente em "Ler Página" para liberar o controle de reprodução.'
       );
     } finally {
       setGerandoAudio(false);
@@ -929,47 +1111,118 @@ export default function PainelProLeituraPage() {
 
   function handlePlayPause() {
     if (isPlaying) {
-      pararAudio();
+      pararAudio(true);
       return;
     }
+
+    // Só retoma o <audio> atual se o src corresponder exatamente ao audioUrlAtivoRef da página atual
+    const pagAtual = paginasRef.current[paginaIdxRef.current];
+    const chaveEsperada =
+      itemAtivoRef.current && pagAtual
+        ? `${itemAtivoRef.current.id}_${pagAtual.pagina_real}_${vozTts}_${hashTextoRapido(
+            (pagAtual.texto || '').trim()
+          )}`
+        : '';
+    const cachePaginaAtual = chaveEsperada
+      ? cacheAudioPaginasRef.current[chaveEsperada]
+      : null;
+
     if (
       !vozTts.startsWith('nativa:') &&
       audioRef.current &&
-      audioRef.current.src &&
+      audioUrlAtivoRef.current &&
+      cachePaginaAtual?.audioUrl === audioUrlAtivoRef.current &&
       audioRef.current.currentTime > 0 &&
       !audioRef.current.ended
     ) {
       conectarGainNodeSeNecessario();
       audioRef.current.play();
       setIsPlaying(true);
+      enviarSyncImediato({
+        isPlaying: true,
+        audioUrl: audioUrlAtivoRef.current,
+        currentTime: audioRef.current.currentTime,
+      });
     } else {
-      tocarPagina(paginaIdx);
+      tocarPagina(paginaIdxRef.current);
     }
   }
 
   function handleAudioEnded() {
     setIsPlaying(false);
-    const proxIdx = paginas.findIndex((p, i) => i > paginaIdx && !p.pular);
+    const listaAtual = paginasRef.current;
+    const idxAtual = paginaIdxRef.current;
+    const proxIdx = listaAtual.findIndex((p, i) => i > idxAtual && !p.pular);
     if (proxIdx !== -1) {
       setPaginaIdx(proxIdx);
+      paginaIdxRef.current = proxIdx;
       setLinhaAtivaIdx(0);
       setRolagemManualAtiva(false);
-      setTimeout(() => tocarPagina(proxIdx), 350);
+      setTimeout(() => tocarPagina(proxIdx, listaAtual), 300);
     } else {
+      enviarSyncImediato({ isPlaying: false });
       setStatusFeedback('✅ Leitura do documento concluída!');
     }
   }
 
   // Funções do Modal de Preparação do Roteiro (#modal-prep)
   function abrirModalPreparacao() {
-    pararAudio();
-    setPaginasEdicao(paginas.map((p) => ({ ...p })));
+    pararAudio(true);
+    setAvisoModalPrep('');
+    setPaginasEdicao(paginasRef.current.map((p) => ({ ...p })));
     modalPrepRef.current?.showModal();
+  }
+
+  async function handleSalvarChaveGeminiRapido() {
+    if (!chaveGeminiModal.trim()) return;
+    setSalvandoChaveIaModal(true);
+    setAvisoModalPrep('');
+    try {
+      const testRes = await fetch('/api/vereadores', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          acao: 'testar_gemini',
+          chave: chaveGeminiModal.trim(),
+        }),
+      });
+      const testData = await testRes.json();
+      if (!testRes.ok || !testData.ok) {
+        setAvisoModalPrep(`❌ ${testData.error || 'Chave Gemini inválida.'}`);
+        return;
+      }
+
+      const saveRes = await fetch('/api/vereadores', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          acao: 'salvar_gemini',
+          chave: chaveGeminiModal.trim(),
+        }),
+      });
+      if (saveRes.ok) {
+        setIaStatus((prev) => ({ ...prev, geminiAtivo: true }));
+        setChaveGeminiModal('');
+        setMostrarConfigIaModal(false);
+        setAvisoModalPrep(
+          '✅ Chave Google Gemini salva! Agora clique em "✨ Revisar PDF e Tabelas com IA".'
+        );
+      }
+    } finally {
+      setSalvandoChaveIaModal(false);
+    }
   }
 
   async function handleRevisarIaNoModal() {
     if (!itemAtivo) return;
     setRevisandoIaModal(true);
+    setAvisoModalPrep(
+      iaStatus.geminiAtivo
+        ? '🧠 O Google Gemini está analisando visualmente o PDF (convertendo tabelas em prosa, removendo tachados e ajustando números)...'
+        : iaStatus.openaiAtivo
+          ? '🧠 A OpenAI está revisando as formatações, tabelas e números para leitura...'
+          : '⚙️ Aplicando limpeza legislativa automática (43/2026 -> 43 de 2026, remoção de [assinado digitalmente], datas e incisos)...'
+    );
     try {
       const res = await fetch(`/api/sessoes/${sessaoId}/leitura`, {
         method: 'POST',
@@ -983,6 +1236,22 @@ export default function PainelProLeituraPage() {
       const data = await res.json();
       if (res.ok && Array.isArray(data.paginas)) {
         setPaginasEdicao(data.paginas);
+        if (data.provedorIa === 'gemini-pdf') {
+          setAvisoModalPrep(
+            '✅ PDF revisado visualmente pelo Google Gemini 2.5 Flash! Tabelas, tachados e números foram convertidos. Confira e clique em "Salvar e Gerar Áudios".'
+          );
+        } else if (
+          data.provedorIa === 'gemini-texto' ||
+          data.provedorIa === 'openai'
+        ) {
+          setAvisoModalPrep(
+            '✅ Texto revisado com IA! Confira e clique em "Salvar e Gerar Áudios".'
+          );
+        } else {
+          setAvisoModalPrep(
+            '✅ Regras automáticas aplicadas (números/ano sem "avos", datas e remoção de assinaturas). Dica: para converter TABELAS complexas do PDF em texto corrido, clique em "Configurar IA Gratuita (Gemini)".'
+          );
+        }
       }
     } finally {
       setRevisandoIaModal(false);
@@ -991,36 +1260,79 @@ export default function PainelProLeituraPage() {
 
   async function handleRecarregarOriginalDoPdf() {
     if (!itemAtivo) return;
-    await selecionarItemParaLeitura(itemAtivo, true);
+    const q = `/api/sessoes/${sessaoId}/leitura?pautaId=${itemAtivo.id}&ignoreCache=1`;
+    const res = await fetch(q, { cache: 'no-store' });
+    const data = await res.json();
+    if (res.ok && Array.isArray(data.paginas)) {
+      setPaginasEdicao(data.paginas);
+      setAvisoModalPrep(
+        '🔄 Texto original extraído novamente do PDF com limpeza automática aplicada. Clique em "Salvar e Gerar Áudios" para aplicar.'
+      );
+    }
   }
 
   async function handleSalvarEGerarAudiosModal(e: React.FormEvent) {
     e.preventDefault();
     if (!itemAtivo) return;
     setSalvandoModal(true);
+
     try {
+      pararAudio(true);
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.removeAttribute('src');
+        audioRef.current.load();
+      }
+      audioUrlAtivoRef.current = null;
+
+      const paginasLimpas: PaginaRoteiro[] = paginasEdicao.map((p) => ({
+        pagina_real: p.pagina_real,
+        texto: (p.texto || '').trim(),
+        pular: Boolean(p.pular),
+        audio_url: null,
+      }));
+
       const res = await fetch(`/api/sessoes/${sessaoId}/leitura`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           acao: 'salvar_roteiro',
           pautaId: itemAtivo.id,
-          paginas: paginasEdicao,
+          paginas: paginasLimpas,
         }),
       });
+
       if (res.ok) {
+        const novaVersao = ++versaoRoteiroRef.current;
         cacheAudioPaginasRef.current = {};
-        setPaginas(paginasEdicao);
+        setAudiosProntosCount(0);
+
+        // Atualiza tanho o state quanto a ref imediatamente para não usar texto antigo!
+        paginasRef.current = paginasLimpas;
+        setPaginas(paginasLimpas);
         setItens((prev) =>
           prev.map((i) =>
             i.id === itemAtivo.id ? { ...i, jaRevisado: true } : i
           )
         );
+
         modalPrepRef.current?.close();
-        const primeiraValida = paginasEdicao.findIndex((p) => !p.pular);
+
+        const primeiraValida = paginasLimpas.findIndex(
+          (p) => !p.pular && p.texto.length > 0
+        );
         const alvo = primeiraValida >= 0 ? primeiraValida : 0;
         setPaginaIdx(alvo);
-        tocarPagina(alvo);
+        paginaIdxRef.current = alvo;
+
+        // Gera e já inicia com o NOVO texto editado + dispara geração das demais páginas em background
+        await tocarPagina(alvo, paginasLimpas);
+        gerarTodosAudiosBackground(
+          itemAtivo.id,
+          paginasLimpas,
+          vozTts,
+          novaVersao
+        );
       }
     } finally {
       setSalvandoModal(false);
@@ -1036,6 +1348,9 @@ export default function PainelProLeituraPage() {
   }
 
   const linhaAtivaObj = linhasPdfRef.current[linhaAtivaIdx] || null;
+  const totalPaginasLegiveis = paginas.filter(
+    (p) => !p.pular && (p.texto || '').trim().length > 0
+  ).length;
 
   return (
     <div
@@ -1174,8 +1489,10 @@ export default function PainelProLeituraPage() {
                 type="button"
                 disabled={paginaIdx <= 0}
                 onClick={() => {
-                  pararAudio();
-                  setPaginaIdx((p) => Math.max(0, p - 1));
+                  pararAudio(true);
+                  const novo = Math.max(0, paginaIdx - 1);
+                  setPaginaIdx(novo);
+                  paginaIdxRef.current = novo;
                 }}
                 className="p-2 rounded-lg hover:bg-slate-800 disabled:opacity-30 cursor-pointer"
                 title="Página Anterior"
@@ -1210,8 +1527,10 @@ export default function PainelProLeituraPage() {
                 type="button"
                 disabled={paginaIdx >= paginas.length - 1}
                 onClick={() => {
-                  pararAudio();
-                  setPaginaIdx((p) => Math.min(paginas.length - 1, p + 1));
+                  pararAudio(true);
+                  const novo = Math.min(paginas.length - 1, paginaIdx + 1);
+                  setPaginaIdx(novo);
+                  paginaIdxRef.current = novo;
                 }}
                 className="p-2 rounded-lg hover:bg-slate-800 disabled:opacity-30 cursor-pointer"
                 title="Próxima Página"
@@ -1223,20 +1542,45 @@ export default function PainelProLeituraPage() {
                 Pág. {paginaAtualObj?.pagina_real || 1}/{paginas.length || 1}
               </span>
             </div>
+
+            {totalPaginasLegiveis > 0 && !vozTts.startsWith('nativa:') && (
+              <span
+                className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold tabular-nums border ${
+                  audiosProntosCount >= totalPaginasLegiveis
+                    ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                    : 'bg-slate-800 border-slate-700 text-slate-300'
+                }`}
+                title="Quantidade de páginas com arquivo de áudio pronto"
+              >
+                🔊 {audiosProntosCount}/{totalPaginasLegiveis} prontos
+              </span>
+            )}
           </div>
 
-          {/* Seletores de Voz (Gratuitas Feminina Padrão + Sistema + OpenAI), Velocidade, Rolagem e Ganho */}
+          {/* Seletores de Saída OBS, Voz, Velocidade, Rolagem e Ganho */}
           <div className="flex flex-wrap items-center gap-2 text-xs">
+            <select
+              aria-label="Onde reproduzir o áudio"
+              value={saidaAudio}
+              onChange={(e) => setSaidaAudio(e.target.value as ModoSaidaAudio)}
+              className="px-2.5 py-2 rounded-xl bg-slate-800 border border-cyan-500/50 text-cyan-200 font-bold"
+              title="Defina se o som sai no link do Telão OBS, neste PC ou em ambos"
+            >
+              <option value="ambos">🔊 Som: Telão OBS + Este PC</option>
+              <option value="obs">📺 Som: Só no Telão OBS (Mudo aqui)</option>
+              <option value="local">💻 Som: Só neste PC</option>
+            </select>
+
             <select
               aria-label="Selecionar Voz TTS"
               value={vozTts}
               onChange={(e) => {
-                pararAudio();
+                pararAudio(true);
                 setVozTts(e.target.value);
               }}
-              className="px-2.5 py-2 rounded-xl bg-slate-800 border border-emerald-500/40 text-slate-100 font-bold max-w-[270px]"
+              className="px-2.5 py-2 rounded-xl bg-slate-800 border border-emerald-500/40 text-slate-100 font-bold max-w-[240px]"
             >
-              <optgroup label="☁️ Google Cloud (credencial da Câmara)">
+              <optgroup label="☁️ Google Cloud (credencial da Câmara — Sai no OBS)">
                 <option value="gcloud:pt-BR-Standard-D">⭐ Andressa (Padrão)</option>
                 <option value="gcloud:pt-BR-Wavenet-D">Wavenet D (Feminina Natural)</option>
                 <option value="gcloud:pt-BR-Neural2-A">Neural2 A (Feminina Neural)</option>
@@ -1248,32 +1592,14 @@ export default function PainelProLeituraPage() {
                 <option value="gcloud:pt-BR-Wavenet-B">Wavenet B (Masculina)</option>
                 <option value="gcloud:pt-BR-Wavenet-E">Wavenet E (Masculina)</option>
               </optgroup>
-              <optgroup label="🆓 Vozes Gratuitas Google (reserva, sem chave)">
-                <option value="google-feminina">
-                  🌐 Google Feminina Brasil (Fluida)
-                </option>
-                <option value="google-solene">
-                  🌐 Google Feminina Brasil (Cadência Solene)
-                </option>
-                <option value="google-clara">
-                  🌐 Google Feminina Brasil (Clara GTX)
-                </option>
-                <option value="google-pt">
-                  🌐 Google Feminina Clássica (Português)
-                </option>
+              <optgroup label="🆓 Vozes Gratuitas Google (Reserva — Sai no OBS)">
+                <option value="google-feminina">🌐 Google Feminina Brasil (Fluida)</option>
+                <option value="google-solene">🌐 Google Feminina Brasil (Solene)</option>
+                <option value="google-clara">🌐 Google Feminina Brasil (Clara GTX)</option>
+                <option value="google-pt">🌐 Google Feminina Clássica (Português)</option>
               </optgroup>
 
-              {vozesNativasPt.length > 0 && (
-                <optgroup label="🆓 Vozes Gratuitas do Sistema / Navegador (pt-BR)">
-                  {vozesNativasPt.map((v) => (
-                    <option key={v.name} value={`nativa:${v.name}`}>
-                      🗣️ {v.name} ({v.lang})
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-
-              <optgroup label="🔑 Vozes OpenAI Neural (Requer Chave API)">
+              <optgroup label="🔑 Vozes OpenAI Neural (Requer Chave — Sai no OBS)">
                 <option value="nova">✨ Nova (Feminina Dinâmica)</option>
                 <option value="shimmer">✨ Shimmer (Feminina Clara)</option>
                 <option value="coral">✨ Coral (Feminina Expressiva)</option>
@@ -1282,6 +1608,16 @@ export default function PainelProLeituraPage() {
                 <option value="echo">✨ Echo (Masculina Suave)</option>
                 <option value="alloy">✨ Alloy (Neutra)</option>
               </optgroup>
+
+              {vozesNativasPt.length > 0 && (
+                <optgroup label="💻 Vozes Locais deste Navegador (Não saem no OBS)">
+                  {vozesNativasPt.map((v) => (
+                    <option key={v.name} value={`nativa:${v.name}`}>
+                      🗣️ {v.name} (Apenas local)
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
 
             <select
@@ -1305,7 +1641,6 @@ export default function PainelProLeituraPage() {
                 setModoRolagem(e.target.value as 'linha' | 'continuo')
               }
               className="px-2.5 py-2 rounded-xl bg-slate-800 border border-blue-500/40 text-blue-200 font-bold"
-              title="Escolha entre pular linha por linha conforme a leitura ou rolagem contínua"
             >
               <option value="linha">📑 Rolagem: Pular Linha a Linha</option>
               <option value="continuo">🌊 Rolagem: Contínua Suave</option>
@@ -1317,10 +1652,10 @@ export default function PainelProLeituraPage() {
               onChange={(e) => setVelocidadeScrollMult(Number(e.target.value))}
               className="px-2.5 py-2 rounded-xl bg-slate-800 border border-slate-700 text-slate-100 font-bold"
             >
-              <option value={1.12}>Sincronia: -12% (Mais Lenta)</option>
+              <option value={1.12}>Sincronia: -12%</option>
               <option value={1.0}>Sincronia: 100% (Exata)</option>
-              <option value={0.9}>Sincronia: +10% (Adiantada)</option>
-              <option value={0.8}>Sincronia: +20% (Rápida)</option>
+              <option value={0.9}>Sincronia: +10%</option>
+              <option value={0.8}>Sincronia: +20%</option>
             </select>
 
             <div className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-800 border border-slate-700">
@@ -1352,7 +1687,7 @@ export default function PainelProLeituraPage() {
               target="_blank"
               rel="noreferrer"
               className="px-3 py-2 rounded-xl bg-blue-600/25 hover:bg-blue-600/40 text-blue-300 border border-blue-500/30 font-bold flex items-center gap-1.5"
-              title="Abrir Telão de Leitura sincronizado para Projetor / OBS Studio"
+              title="Abrir Telão de Leitura com Vídeo + Áudio sincronizados para captura no OBS Studio"
             >
               <Tv className="w-3.5 h-3.5" />
               <span>Telão OBS</span>
@@ -1397,7 +1732,6 @@ export default function PainelProLeituraPage() {
         )}
 
         {/* Área Central de Exibição do Documento PDF com Guia Visual Linha a Linha */}
-        {/* IMPORTANTE: display block (sem flex-col) para nunca comprimir a altura do canvas e garantir scroll completo */}
         <div
           ref={viewportContainerRef}
           onWheel={() => {
@@ -1433,7 +1767,6 @@ export default function PainelProLeituraPage() {
             >
               <canvas ref={canvasRef} className="block" />
 
-              {/* Marcador Visual da Linha Ativa em Leitura (Pula linha a linha sincronizado com a voz) */}
               {linhaAtivaObj && (
                 <div
                   style={{
@@ -1473,40 +1806,81 @@ export default function PainelProLeituraPage() {
         ref={modalPrepRef}
         aria-labelledby="modal-prep-title"
         onClick={(e) => {
-          if (e.target === modalPrepRef.current) modalPrepRef.current?.close();
+          const dlg = modalPrepRef.current;
+          if (!dlg) return;
+          const r = dlg.getBoundingClientRect();
+          if (
+            e.clientX < r.left ||
+            e.clientX > r.right ||
+            e.clientY < r.top ||
+            e.clientY > r.bottom
+          ) {
+            dlg.close();
+          }
         }}
         className="rounded-3xl p-0 backdrop:bg-slate-950/75 shadow-2xl border border-slate-700 bg-slate-900 text-slate-100 w-full max-w-4xl m-auto"
       >
         <form
           onSubmit={handleSalvarEGerarAudiosModal}
-          className="p-6 sm:p-8 space-y-5"
+          className="p-6 sm:p-8 space-y-4"
         >
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
             <div>
-              <h3
-                id="modal-prep-title"
-                className="text-xl font-extrabold text-white"
-              >
-                ✨ Preparação do Roteiro de Leitura — {itemAtivo?.titulo}
-              </h3>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2
+                  id="modal-prep-title"
+                  className="text-xl font-extrabold text-white"
+                >
+                  ✨ Preparação do Roteiro — {itemAtivo?.titulo}
+                </h2>
+                <span
+                  className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
+                    iaStatus.geminiAtivo
+                      ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+                      : iaStatus.openaiAtivo
+                        ? 'bg-blue-500/20 border-blue-500/40 text-blue-300'
+                        : 'bg-amber-500/15 border-amber-500/30 text-amber-300'
+                  }`}
+                >
+                  {iaStatus.geminiAtivo
+                    ? '✓ Gemini PDF Vision Ativo'
+                    : iaStatus.openaiAtivo
+                      ? '✓ OpenAI Ativo'
+                      : 'Regras Automáticas Ativas'}
+                </span>
+              </div>
               <p className="text-xs text-slate-400 mt-1">
-                Revise o texto extraído de cada página, marque páginas para pular
-                (ex.: assinaturas) e gere a voz sincronizada.
+                Edite livremente o texto ou use a IA para converter tabelas em prosa,
+                remover tachados/assinaturas e ajustar números. Ao salvar, um novo áudio é
+                gerado imediatamente com suas alterações.
               </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {!iaStatus.geminiAtivo && (
+                <button
+                  type="button"
+                  onClick={() => setMostrarConfigIaModal((v) => !v)}
+                  className="px-3 py-2.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <KeyRound className="w-3.5 h-3.5" />
+                  <span>Configurar IA Gratuita (Gemini)</span>
+                </button>
+              )}
+
               <button
                 type="button"
                 disabled={revisandoIaModal}
                 onClick={handleRevisarIaNoModal}
-                className="px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-extrabold flex items-center gap-1.5 cursor-pointer"
+                className="px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-xs font-extrabold flex items-center gap-1.5 cursor-pointer"
               >
                 <Sparkles className="w-4 h-4" />
                 <span>
                   {revisandoIaModal
-                    ? 'Revisando com IA...'
-                    : '✨ Revisar Formatações'}
+                    ? 'Revisando PDF com IA...'
+                    : iaStatus.geminiAtivo
+                      ? '✨ Revisar PDF e Tabelas com IA'
+                      : '✨ Revisar Formatações'}
                 </span>
               </button>
 
@@ -1516,12 +1890,63 @@ export default function PainelProLeituraPage() {
                 className="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                <span>Recarregar Original do PDF</span>
+                <span>Recarregar do PDF</span>
               </button>
             </div>
           </div>
 
-          <div className="max-h-[55vh] overflow-y-auto space-y-4 pr-1">
+          {/* Painel Rápido para ativar Google Gemini Gratuito (Google AI Studio) */}
+          {mostrarConfigIaModal && (
+            <div className="p-4 rounded-2xl bg-slate-950/90 border border-amber-500/40 space-y-3">
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Para que a IA enxergue <strong>tabelas orçamentárias</strong>, ignore{' '}
+                <strong>textos tachados</strong> e escreva valores/datas por extenso
+                diretamente do PDF, gere uma chave gratuita em{' '}
+                <a
+                  href="https://aistudio.google.com/apikey"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-amber-300 underline font-bold"
+                >
+                  aistudio.google.com/apikey
+                </a>{' '}
+                (começa com <code className="text-amber-200">AIza...</code>) e cole abaixo:
+              </p>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input
+                  type="password"
+                  value={chaveGeminiModal}
+                  onChange={(e) => setChaveGeminiModal(e.target.value)}
+                  placeholder="AIzaSy..."
+                  aria-label="Chave da API Google Gemini"
+                  className="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs font-mono text-white"
+                />
+                <button
+                  type="button"
+                  disabled={salvandoChaveIaModal || !chaveGeminiModal.trim()}
+                  onClick={handleSalvarChaveGeminiRapido}
+                  className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>
+                    {salvandoChaveIaModal ? 'Validando...' : 'Validar e Ativar Gemini'}
+                  </span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {avisoModalPrep && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="p-3.5 rounded-xl bg-blue-950/70 border border-blue-500/40 text-xs font-semibold text-blue-200"
+            >
+              {avisoModalPrep}
+            </div>
+          )}
+
+          <div className="max-h-[52vh] overflow-y-auto space-y-4 pr-1">
             {paginasEdicao.map((p, idx) => (
               <div
                 key={p.pagina_real}
@@ -1563,7 +1988,7 @@ export default function PainelProLeituraPage() {
                     const val = e.target.value;
                     setPaginasEdicao((prev) =>
                       prev.map((x, i) =>
-                        i === idx ? { ...x, texto: val } : x
+                        i === idx ? { ...x, texto: val, audio_url: null } : x
                       )
                     );
                   }}
@@ -1588,11 +2013,11 @@ export default function PainelProLeituraPage() {
               className="px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-extrabold flex items-center gap-2 cursor-pointer shadow-lg"
             >
               {salvandoModal ? (
-                <span>Salvando e Gerando Voz...</span>
+                <span>Salvando e Gerando Novo Áudio...</span>
               ) : (
                 <>
                   <Save className="w-4 h-4" />
-                  <span>💾 Salvar e Gerar Áudios</span>
+                  <span>💾 Salvar e Gerar Novos Áudios</span>
                 </>
               )}
             </button>

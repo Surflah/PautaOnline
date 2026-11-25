@@ -3,26 +3,31 @@ import { prisma } from '@/lib/prisma';
 import { ordenarVereadoresRegimental } from '@/core/regimento';
 import { registrarAuditoria } from '@/lib/auth';
 
+function mascararChave(chave: string): string {
+  if (chave.length > 10) {
+    return `${chave.slice(0, 7)}...${chave.slice(-4)}`;
+  }
+  return chave ? 'Configurada' : '';
+}
+
 export async function GET() {
   try {
-    const [vereadoresRaw, openaiCfg] = await Promise.all([
+    const [vereadoresRaw, openaiCfg, geminiCfg] = await Promise.all([
       prisma.vereador.findMany(),
       prisma.configuracao.findUnique({ where: { chave: 'openai_key' } }),
+      prisma.configuracao.findUnique({ where: { chave: 'gemini_key' } }),
     ]);
 
     const vereadores = ordenarVereadoresRegimental(vereadoresRaw);
-    const chave = openaiCfg?.valor || '';
-    const chaveMascarada =
-      chave.length > 10
-        ? `${chave.slice(0, 7)}...${chave.slice(-4)}`
-        : chave
-        ? 'Configurada'
-        : '';
+    const chaveOpenai = (openaiCfg?.valor || process.env.OPENAI_API_KEY || '').trim();
+    const chaveGemini = (geminiCfg?.valor || process.env.GEMINI_API_KEY || '').trim();
 
     return NextResponse.json({
       vereadores,
-      openaiConfigurada: Boolean(chave),
-      openaiMascarada: chaveMascarada,
+      openaiConfigurada: Boolean(chaveOpenai),
+      openaiMascarada: mascararChave(chaveOpenai),
+      geminiConfigurada: Boolean(chaveGemini),
+      geminiMascarada: mascararChave(chaveGemini),
     });
   } catch (err) {
     console.error('Erro ao listar vereadores:', err);
@@ -117,6 +122,55 @@ export async function POST(req: NextRequest) {
         entidadeId: id,
       });
       return NextResponse.json({ ok: true });
+    }
+
+    if (acao === 'salvar_gemini') {
+      const chave = String(body.chave || '').trim();
+      await prisma.configuracao.upsert({
+        where: { chave: 'gemini_key' },
+        update: { valor: chave },
+        create: { chave: 'gemini_key', valor: chave },
+      });
+      await registrarAuditoria({
+        acao: 'ATUALIZAR_CHAVE_GEMINI',
+        entidade: 'Configuracao',
+        entidadeId: 'gemini_key',
+      });
+      return NextResponse.json({ ok: true });
+    }
+
+    if (acao === 'testar_gemini') {
+      const cfg = await prisma.configuracao.findUnique({ where: { chave: 'gemini_key' } });
+      const chave = String(body.chave || cfg?.valor || process.env.GEMINI_API_KEY || '').trim();
+      if (!chave) {
+        return NextResponse.json(
+          { ok: false, error: 'Nenhuma chave do Google Gemini informada.' },
+          { status: 400 }
+        );
+      }
+
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
+          chave
+        )}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: 'Responda apenas OK' }] }],
+          }),
+        }
+      );
+      if (!res.ok) {
+        return NextResponse.json(
+          { ok: false, error: `Chave rejeitada pelo Google Gemini (HTTP ${res.status}).` },
+          { status: 400 }
+        );
+      }
+      return NextResponse.json({
+        ok: true,
+        message: 'Google Gemini 2.5 Flash validado! Leitura inteligente de PDFs, tabelas e textos tachados ativa.',
+      });
     }
 
     if (acao === 'salvar_openai') {

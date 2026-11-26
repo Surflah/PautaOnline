@@ -1236,9 +1236,9 @@ export default function PainelProLeituraPage() {
       const data = await res.json();
       if (res.ok && Array.isArray(data.paginas)) {
         setPaginasEdicao(data.paginas);
-        if (data.provedorIa === 'gemini-pdf') {
+          if (data.provedorIa === 'gemini-pdf') {
           setAvisoModalPrep(
-            '✅ PDF revisado visualmente pelo Google Gemini 2.5 Flash! Tabelas, tachados e números foram convertidos. Confira e clique em "Salvar e Gerar Áudios".'
+            '✅ PDF revisado visualmente pelo Google Gemini! Tabelas, tachados e números foram convertidos. Confira e clique em "Salvar e Gerar Novos Áudios".'
           );
         } else if (
           data.provedorIa === 'gemini-texto' ||
@@ -1910,14 +1910,15 @@ export default function PainelProLeituraPage() {
                 >
                   aistudio.google.com/apikey
                 </a>{' '}
-                (começa com <code className="text-amber-200">AIza...</code>) e cole abaixo:
+                (começa com <code className="text-amber-200">AQ...</code> ou{' '}
+                <code className="text-amber-200">AIza...</code>) e cole abaixo:
               </p>
               <div className="flex flex-col sm:flex-row gap-2">
                 <input
                   type="password"
                   value={chaveGeminiModal}
                   onChange={(e) => setChaveGeminiModal(e.target.value)}
-                  placeholder="AIzaSy..."
+                  placeholder="AQ... ou AIzaSy..."
                   aria-label="Chave da API Google Gemini"
                   className="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs font-mono text-white"
                 />

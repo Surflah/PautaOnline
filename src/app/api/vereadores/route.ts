@@ -149,27 +149,37 @@ export async function POST(req: NextRequest) {
         );
       }
 
+      // Validação instantânea via catálogo oficial de modelos (não consome cota e não sofre 503 de fila)
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
-          chave
-        )}`,
+        'https://generativelanguage.googleapis.com/v1beta/models',
         {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ role: 'user', parts: [{ text: 'Responda apenas OK' }] }],
-          }),
+          headers: { 'x-goog-api-key': chave },
         }
       );
+
       if (!res.ok) {
+        let detalheErro = '';
+        try {
+          const errJson = await res.json();
+          detalheErro = errJson?.error?.message || '';
+        } catch {
+          // Ignora
+        }
         return NextResponse.json(
-          { ok: false, error: `Chave rejeitada pelo Google Gemini (HTTP ${res.status}).` },
+          {
+            ok: false,
+            error: `Chave rejeitada pelo Google Gemini (HTTP ${res.status})${
+              detalheErro ? `: ${detalheErro}` : '. Verifique se copiou a chave completa.'
+            }`,
+          },
           { status: 400 }
         );
       }
+
       return NextResponse.json({
         ok: true,
-        message: 'Google Gemini 2.5 Flash validado! Leitura inteligente de PDFs, tabelas e textos tachados ativa.',
+        message:
+          'Chave Google Gemini validada com sucesso! Leitura visual de PDFs, tabelas e textos tachados ativa.',
       });
     }
 

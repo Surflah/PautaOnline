@@ -287,6 +287,57 @@ Regras obrigatórias e rigorosas:
 4. VALORES, DATAS E DISPOSITIVOS LEGAIS: escreva valores monetários (R$ 15.000,00 -> quinze mil reais), porcentagens, datas, artigos (Art. 1º -> Artigo primeiro; Art. 10 -> Artigo dez), parágrafos (§ 1º -> Parágrafo primeiro) e incisos romanos (I - -> Inciso primeiro:) de forma fluida para leitura em voz alta.
 5. FIDELIDADE JURÍDICA: não resuma, não omita o mérito do texto e não adicione comentários como "Aqui está o texto:". Retorne exclusivamente o texto pronto para leitura.`;
 
+const MODELOS_GEMINI_PREFERENCIA = [
+  'gemini-flash-lite-latest',
+  'gemini-3.8-flash',
+  'gemini-3.1-flash-lite',
+] as const;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function extrairTextoRespostaGemini(data: any): string {
+  const parts = data?.candidates?.[0]?.content?.parts;
+  if (!Array.isArray(parts)) return '';
+  return parts
+    .filter((p) => p && !p.thought && typeof p.text === 'string')
+    .map((p) => p.text)
+    .join('')
+    .trim();
+}
+
+async function chamarGeminiGenerateContent(
+  geminiKey: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  payload: Record<string, any>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<any | null> {
+  for (const modelo of MODELOS_GEMINI_PREFERENCIA) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': geminiKey,
+          },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(35000),
+        }
+      );
+      if (res.ok) {
+        return res.json();
+      }
+      // Se a chave for inválida (401/403), não adianta tentar outro modelo
+      if (res.status === 401 || res.status === 403) {
+        return null;
+      }
+    } catch {
+      // Timeout ou oscilação no modelo atual -> tenta o próximo modelo da lista
+    }
+  }
+  return null;
+}
+
 export async function revisarPaginaComIA(
   textoOriginal: string,
   opcoes?: { openaiKey?: string; geminiKey?: string } | string
@@ -303,37 +354,25 @@ export async function revisarPaginaComIA(
       ? (opcoes.geminiKey || process.env.GEMINI_API_KEY || '').trim()
       : (process.env.GEMINI_API_KEY || '').trim();
 
-  // 1. Prioriza Google Gemini (2.5 Flash) se configurado
+  // 1. Prioriza Google Gemini (Flash Latest / 3.8 Flash) se configurado
   if (geminiKey) {
     try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
-          geminiKey
-        )}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            systemInstruction: {
-              parts: [{ text: PROMPT_SISTEMA_REVISAO_LEGISLATIVA }],
-            },
-            contents: [
-              {
-                role: 'user',
-                parts: [{ text: textoOriginal.slice(0, 20000) }],
-              },
-            ],
-            generationConfig: {
-              temperature: 0.1,
-            },
-          }),
-        }
-      );
-      if (res.ok) {
-        const data = await res.json();
-        const txtIa = String(
-          data.candidates?.[0]?.content?.parts?.[0]?.text || ''
-        ).trim();
+      const data = await chamarGeminiGenerateContent(geminiKey, {
+        systemInstruction: {
+          parts: [{ text: PROMPT_SISTEMA_REVISAO_LEGISLATIVA }],
+        },
+        contents: [
+          {
+            role: 'user',
+            parts: [{ text: textoOriginal.slice(0, 20000) }],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.1,
+        },
+      });
+      if (data) {
+        const txtIa = extrairTextoRespostaGemini(data);
         if (txtIa) {
           return limparTextoLegislativoDeterministico(txtIa);
         }
@@ -422,41 +461,32 @@ Retorne ESTRITAMENTE um array JSON válido no formato:
 ]
 Se uma página contiver exclusivamente assinaturas digitais ou carimbos sem conteúdo legislativo para ler, retorne "texto": "" para essa página.`;
 
-        const res = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
-            geminiKey
-          )}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [
+        const data = await chamarGeminiGenerateContent(geminiKey, {
+          contents: [
+            {
+              role: 'user',
+              parts: [
                 {
-                  role: 'user',
-                  parts: [
-                    {
-                      inlineData: {
-                        mimeType: 'application/pdf',
-                        data: pdfBuf.toString('base64'),
-                      },
-                    },
-                    { text: promptPdf },
-                  ],
+                  inlineData: {
+                    mimeType: 'application/pdf',
+                    data: pdfBuf.toString('base64'),
+                  },
                 },
+                { text: promptPdf },
               ],
-              generationConfig: {
-                temperature: 0.1,
-                responseMimeType: 'application/json',
-              },
-            }),
-          }
-        );
+            },
+          ],
+          generationConfig: {
+            temperature: 0.1,
+            responseMimeType: 'application/json',
+          },
+        });
 
-        if (res.ok) {
-          const data = await res.json();
-          const rawJson = String(
-            data.candidates?.[0]?.content?.parts?.[0]?.text || ''
-          ).trim();
+        if (data) {
+          const rawJson = extrairTextoRespostaGemini(data)
+            .replace(/^```json\s*/i, '')
+            .replace(/```\s*$/i, '')
+            .trim();
           const parsed = JSON.parse(rawJson);
           if (Array.isArray(parsed) && parsed.length > 0) {
             const mapaPorPagina = new Map<number, string>();

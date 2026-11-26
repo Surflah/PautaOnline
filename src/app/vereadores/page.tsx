@@ -387,7 +387,7 @@ export default function VereadoresPage() {
             <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
               <div className="space-y-1">
                 <p className="text-xs font-extrabold uppercase tracking-wider text-emerald-700">
-                  ⭐ Recomendado e Gratuito — Google Gemini 2.5 Flash (Lê PDF e Tabelas)
+                  ⭐ Recomendado e Gratuito — Google Gemini Flash (Lê PDF e Tabelas)
                 </p>
                 <p className="text-xs text-slate-600 leading-relaxed">
                   Enxerga o PDF original para transformar <strong>tabelas orçamentárias em texto corrido</strong>, ignorar <strong>textos tachados/riscados</strong> e escrever números/datas/valores por extenso. Crie gratuitamente em{' '}
@@ -407,7 +407,7 @@ export default function VereadoresPage() {
                   type="password"
                   value={chaveGeminiInput}
                   onChange={(e) => setChaveGeminiInput(e.target.value)}
-                  placeholder="AIzaSy..."
+                  placeholder="AQ... ou AIzaSy..."
                   aria-label="Chave da API Google Gemini"
                   className="flex-1 px-4 py-2.5 rounded-xl border border-slate-300 bg-white font-mono text-sm text-slate-900"
                 />

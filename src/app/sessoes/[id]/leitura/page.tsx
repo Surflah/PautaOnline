@@ -24,6 +24,13 @@ import {
   ListOrdered,
   KeyRound,
   CheckCircle2,
+  ZoomIn,
+  ZoomOut,
+  Columns2,
+  Rows3,
+  ChevronLeft,
+  ChevronRight,
+  Square,
 } from 'lucide-react';
 
 interface PautaItemLeitura {
@@ -144,8 +151,22 @@ export default function PainelProLeituraPage() {
     height: 0,
   });
 
-  // Modal de Preparação do Roteiro (<dialog>)
+  // Modal de Preparação do Roteiro (<dialog>) — Lado a Lado (PDF + Editor)
   const modalPrepRef = useRef<HTMLDialogElement | null>(null);
+  const containerModalPdfRef = useRef<HTMLDivElement | null>(null);
+  const canvasModalRef = useRef<HTMLCanvasElement | null>(null);
+  const audioPreviaModalRef = useRef<HTMLAudioElement | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const modalRenderTaskRef = useRef<any>(null);
+  const modalRenderSeqRef = useRef<number>(0);
+
+  const [modalAberto, setModalAberto] = useState(false);
+  const [paginaModalIdx, setPaginaModalIdx] = useState(0);
+  const [modoVisaoModal, setModoVisaoModal] = useState<'focada' | 'lista'>('focada');
+  const [zoomPdfModal, setZoomPdfModal] = useState(1.0);
+  const [ouvindoPreviaModal, setOuvindoPreviaModal] = useState(false);
+  const [gerandoPreviaModal, setGerandoPreviaModal] = useState(false);
+
   const [paginasEdicao, setPaginasEdicao] = useState<PaginaRoteiro[]>([]);
   const [revisandoIaModal, setRevisandoIaModal] = useState(false);
   const [salvandoModal, setSalvandoModal] = useState(false);
@@ -1165,13 +1186,149 @@ export default function PainelProLeituraPage() {
     }
   }
 
-  // Funções do Modal de Preparação do Roteiro (#modal-prep)
+  // Funções do Modal de Preparação do Roteiro (#modal-prep — Lado a Lado PDF + Editor)
+  function pararPreviaModal() {
+    if (audioPreviaModalRef.current) {
+      audioPreviaModalRef.current.pause();
+    }
+    setOuvindoPreviaModal(false);
+  }
+
+  function fecharModalPreparacao() {
+    pararPreviaModal();
+    setModalAberto(false);
+    modalPrepRef.current?.close();
+  }
+
   function abrirModalPreparacao() {
     pararAudio(true);
+    pararPreviaModal();
     setAvisoModalPrep('');
-    setPaginasEdicao(paginasRef.current.map((p) => ({ ...p })));
+    const copia = paginasRef.current.map((p) => ({ ...p }));
+    setPaginasEdicao(copia);
+    const idxInicial = Math.min(
+      Math.max(0, paginaIdxRef.current),
+      Math.max(0, copia.length - 1)
+    );
+    setPaginaModalIdx(idxInicial);
+    setModalAberto(true);
     modalPrepRef.current?.showModal();
   }
+
+  async function handleOuvirPreviaPaginaModal(pagAlvo: PaginaRoteiro) {
+    if (!itemAtivo || !pagAlvo.texto.trim()) return;
+    if (ouvindoPreviaModal) {
+      pararPreviaModal();
+      return;
+    }
+    setGerandoPreviaModal(true);
+    try {
+      const dados = await prepararAudioEmBackground(
+        itemAtivo.id,
+        pagAlvo,
+        vozTts.startsWith('nativa:') ? 'gcloud:pt-BR-Standard-D' : vozTts,
+        paginasEdicao
+      );
+      if (dados?.audioUrl && audioPreviaModalRef.current) {
+        audioPreviaModalRef.current.src = dados.audioUrl;
+        audioPreviaModalRef.current.playbackRate = playbackRate;
+        await audioPreviaModalRef.current.play();
+        setOuvindoPreviaModal(true);
+      }
+    } finally {
+      setGerandoPreviaModal(false);
+    }
+  }
+
+  // Renderiza a página correspondente do PDF ao lado esquerdo do Modal de Preparação
+  const numPagRealModal = paginasEdicao[paginaModalIdx]?.pagina_real || 1;
+  useEffect(() => {
+    if (
+      !modalAberto ||
+      !pdfjsPronto ||
+      !window.pdfjsLib ||
+      !itemAtivo?.pdfUrl
+    ) {
+      return;
+    }
+
+    const seq = ++modalRenderSeqRef.current;
+    if (modalRenderTaskRef.current) {
+      try {
+        modalRenderTaskRef.current.cancel();
+      } catch {
+        // Ignora
+      }
+      modalRenderTaskRef.current = null;
+    }
+
+    const timer = requestAnimationFrame(async () => {
+      try {
+        const canvas = canvasModalRef.current;
+        const container = containerModalPdfRef.current;
+        if (!canvas || !container || !itemAtivo?.pdfUrl) return;
+
+        const urlPdfResolvida = itemAtivo.pdfUrl.replace(
+          /^\/uploads\//,
+          '/api/arquivos/'
+        );
+        const loadingTask = window.pdfjsLib.getDocument(urlPdfResolvida);
+        const pdfDoc = await loadingTask.promise;
+        if (seq !== modalRenderSeqRef.current) return;
+
+        const pagNum = Math.min(Math.max(1, numPagRealModal), pdfDoc.numPages);
+        const page = await pdfDoc.getPage(pagNum);
+        if (seq !== modalRenderSeqRef.current || !canvasModalRef.current) return;
+
+        const larguraUtil = Math.max(420, (container.clientWidth || 680) - 32);
+        const unscaled = page.getViewport({ scale: 1 });
+        const scale = (larguraUtil / unscaled.width) * zoomPdfModal;
+        const viewport = page.getViewport({ scale });
+
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          const task = page.render({ canvasContext: ctx, viewport });
+          modalRenderTaskRef.current = task;
+          await task.promise;
+          modalRenderTaskRef.current = null;
+        }
+        container.scrollTop = 0;
+      } catch (err: unknown) {
+        if (
+          err &&
+          typeof err === 'object' &&
+          'name' in err &&
+          (err as { name?: string }).name === 'RenderingCancelledException'
+        ) {
+          return;
+        }
+        console.error('Erro ao renderizar PDF no modal lado a lado:', err);
+      }
+    });
+
+    return () => {
+      cancelAnimationFrame(timer);
+      modalRenderSeqRef.current++;
+      if (modalRenderTaskRef.current) {
+        try {
+          modalRenderTaskRef.current.cancel();
+        } catch {
+          // Ignora
+        }
+        modalRenderTaskRef.current = null;
+      }
+    };
+  }, [
+    modalAberto,
+    pdfjsPronto,
+    itemAtivo?.pdfUrl,
+    numPagRealModal,
+    zoomPdfModal,
+  ]);
 
   async function handleSalvarChaveGeminiRapido() {
     if (!chaveGeminiModal.trim()) return;
@@ -1316,7 +1473,7 @@ export default function PainelProLeituraPage() {
           )
         );
 
-        modalPrepRef.current?.close();
+        fecharModalPreparacao();
 
         const primeiraValida = paginasLimpas.findIndex(
           (p) => !p.pular && p.texto.length > 0
@@ -1801,10 +1958,14 @@ export default function PainelProLeituraPage() {
         </div>
       </div>
 
-      {/* Modal <dialog> de Preparação do Roteiro de Leitura (#modal-prep) */}
+      {/* Modal <dialog> Lado a Lado: PDF Original (Esquerda) + Editor de Leitura (Direita) */}
       <dialog
         ref={modalPrepRef}
         aria-labelledby="modal-prep-title"
+        onClose={() => {
+          pararPreviaModal();
+          setModalAberto(false);
+        }}
         onClick={(e) => {
           const dlg = modalPrepRef.current;
           if (!dlg) return;
@@ -1815,23 +1976,30 @@ export default function PainelProLeituraPage() {
             e.clientY < r.top ||
             e.clientY > r.bottom
           ) {
-            dlg.close();
+            fecharModalPreparacao();
           }
         }}
-        className="rounded-3xl p-0 backdrop:bg-slate-950/75 shadow-2xl border border-slate-700 bg-slate-900 text-slate-100 w-full max-w-4xl m-auto"
+        className="rounded-3xl p-0 backdrop:bg-slate-950/80 shadow-2xl border border-slate-700 bg-slate-900 text-slate-100 w-[96vw] max-w-[1680px] h-[92vh] m-auto overflow-hidden"
       >
+        <audio
+          ref={audioPreviaModalRef}
+          onEnded={() => setOuvindoPreviaModal(false)}
+          className="hidden"
+        />
+
         <form
           onSubmit={handleSalvarEGerarAudiosModal}
-          className="p-6 sm:p-8 space-y-4"
+          className="flex flex-col h-full p-4 sm:p-6 gap-3.5"
         >
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
-            <div>
+          {/* Cabeçalho Compacto do Estúdio Lado a Lado */}
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-slate-800 pb-3 shrink-0">
+            <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h2
                   id="modal-prep-title"
-                  className="text-xl font-extrabold text-white"
+                  className="text-lg sm:text-xl font-extrabold text-white"
                 >
-                  ✨ Preparação do Roteiro — {itemAtivo?.titulo}
+                  ✨ Preparação Lado a Lado — {itemAtivo?.titulo}
                 </h2>
                 <span
                   className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
@@ -1849,10 +2017,9 @@ export default function PainelProLeituraPage() {
                       : 'Regras Automáticas Ativas'}
                 </span>
               </div>
-              <p className="text-xs text-slate-400 mt-1">
-                Edite livremente o texto ou use a IA para converter tabelas em prosa,
-                remover tachados/assinaturas e ajustar números. Ao salvar, um novo áudio é
-                gerado imediatamente com suas alterações.
+              <p className="text-xs text-slate-400 mt-0.5">
+                Compare o documento original à esquerda com o texto falado à direita. Ao
+                trocar de página ou clicar em um trecho, o PDF acompanha automaticamente.
               </p>
             </div>
 
@@ -1861,7 +2028,7 @@ export default function PainelProLeituraPage() {
                 <button
                   type="button"
                   onClick={() => setMostrarConfigIaModal((v) => !v)}
-                  className="px-3 py-2.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  className="px-3 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
                 >
                   <KeyRound className="w-3.5 h-3.5" />
                   <span>Configurar IA Gratuita (Gemini)</span>
@@ -1872,7 +2039,7 @@ export default function PainelProLeituraPage() {
                 type="button"
                 disabled={revisandoIaModal}
                 onClick={handleRevisarIaNoModal}
-                className="px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-xs font-extrabold flex items-center gap-1.5 cursor-pointer"
+                className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-xs font-extrabold flex items-center gap-1.5 cursor-pointer shadow-sm"
               >
                 <Sparkles className="w-4 h-4" />
                 <span>
@@ -1887,7 +2054,7 @@ export default function PainelProLeituraPage() {
               <button
                 type="button"
                 onClick={handleRecarregarOriginalDoPdf}
-                className="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
                 <span>Recarregar do PDF</span>
@@ -1895,13 +2062,11 @@ export default function PainelProLeituraPage() {
             </div>
           </div>
 
-          {/* Painel Rápido para ativar Google Gemini Gratuito (Google AI Studio) */}
+          {/* Painel Rápido para ativar Google Gemini Gratuito */}
           {mostrarConfigIaModal && (
-            <div className="p-4 rounded-2xl bg-slate-950/90 border border-amber-500/40 space-y-3">
+            <div className="p-3.5 rounded-2xl bg-slate-950/90 border border-amber-500/40 space-y-2.5 shrink-0">
               <p className="text-xs text-slate-300 leading-relaxed">
-                Para que a IA enxergue <strong>tabelas orçamentárias</strong>, ignore{' '}
-                <strong>textos tachados</strong> e escreva valores/datas por extenso
-                diretamente do PDF, gere uma chave gratuita em{' '}
+                Gere uma chave gratuita em{' '}
                 <a
                   href="https://aistudio.google.com/apikey"
                   target="_blank"
@@ -1920,13 +2085,13 @@ export default function PainelProLeituraPage() {
                   onChange={(e) => setChaveGeminiModal(e.target.value)}
                   placeholder="AQ... ou AIzaSy..."
                   aria-label="Chave da API Google Gemini"
-                  className="flex-1 px-3.5 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-xs font-mono text-white"
+                  className="flex-1 px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs font-mono text-white"
                 />
                 <button
                   type="button"
                   disabled={salvandoChaveIaModal || !chaveGeminiModal.trim()}
                   onClick={handleSalvarChaveGeminiRapido}
-                  className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 cursor-pointer"
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-extrabold flex items-center justify-center gap-1.5 cursor-pointer"
                 >
                   <CheckCircle2 className="w-4 h-4" />
                   <span>
@@ -1941,87 +2106,376 @@ export default function PainelProLeituraPage() {
             <div
               role="status"
               aria-live="polite"
-              className="p-3.5 rounded-xl bg-blue-950/70 border border-blue-500/40 text-xs font-semibold text-blue-200"
+              className="px-3.5 py-2.5 rounded-xl bg-blue-950/70 border border-blue-500/40 text-xs font-semibold text-blue-200 shrink-0"
             >
               {avisoModalPrep}
             </div>
           )}
 
-          <div className="max-h-[52vh] overflow-y-auto space-y-4 pr-1">
-            {paginasEdicao.map((p, idx) => (
-              <div
-                key={p.pagina_real}
-                className={`p-4 rounded-2xl border transition-all ${
-                  p.pular
-                    ? 'bg-slate-950/60 border-red-900/50 opacity-60'
-                    : 'bg-slate-800/80 border-slate-700'
-                }`}
+          {/* Barra Unificada de Navegação de Páginas (sincroniza PDF + Editor) */}
+          <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-950/70 border border-slate-800 rounded-2xl px-3 py-2 shrink-0">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                disabled={paginaModalIdx <= 0}
+                onClick={() => {
+                  pararPreviaModal();
+                  setPaginaModalIdx((p) => Math.max(0, p - 1));
+                }}
+                aria-label="Página anterior no comparador"
+                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-30 cursor-pointer"
               >
-                <div className="flex items-center justify-between gap-3 mb-2.5">
-                  <span className="text-sm font-extrabold text-blue-400">
-                    Página {p.pagina_real}
-                  </span>
+                <ChevronLeft className="w-4 h-4" />
+              </button>
 
-                  <label className="inline-flex items-center gap-2 text-xs font-bold text-red-300 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(p.pular)}
-                      onChange={(e) => {
-                        const checked = e.target.checked;
-                        setPaginasEdicao((prev) =>
-                          prev.map((x, i) =>
-                            i === idx ? { ...x, pular: checked } : x
-                          )
-                        );
+              <div className="flex flex-wrap items-center gap-1">
+                {paginasEdicao.map((p, idx) => {
+                  const selecionada = idx === paginaModalIdx;
+                  return (
+                    <button
+                      key={p.pagina_real}
+                      type="button"
+                      onClick={() => {
+                        pararPreviaModal();
+                        setPaginaModalIdx(idx);
                       }}
-                      className="w-4 h-4 accent-red-600 rounded"
-                    />
-                    <Ban className="w-3.5 h-3.5" />
-                    <span>🚫 Não ler esta página</span>
-                  </label>
-                </div>
-
-                <textarea
-                  rows={5}
-                  disabled={Boolean(p.pular)}
-                  value={p.texto}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setPaginasEdicao((prev) =>
-                      prev.map((x, i) =>
-                        i === idx ? { ...x, texto: val, audio_url: null } : x
-                      )
-                    );
-                  }}
-                  aria-label={`Texto de leitura da Página ${p.pagina_real}`}
-                  className="w-full p-3.5 rounded-xl bg-slate-950 border border-slate-700 text-sm text-slate-100 leading-relaxed font-medium"
-                />
+                      className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all cursor-pointer flex items-center gap-1 tabular-nums ${
+                        selecionada
+                          ? 'bg-blue-600 text-white shadow-md'
+                          : p.pular
+                            ? 'bg-red-950/50 text-red-300/80 border border-red-900/40 line-through'
+                            : 'bg-slate-800/80 hover:bg-slate-700 text-slate-300'
+                      }`}
+                    >
+                      <span>Pág. {p.pagina_real}</span>
+                      {p.pular && <span title="Marcada para não ler">🚫</span>}
+                    </button>
+                  );
+                })}
               </div>
-            ))}
+
+              <button
+                type="button"
+                disabled={paginaModalIdx >= paginasEdicao.length - 1}
+                onClick={() => {
+                  pararPreviaModal();
+                  setPaginaModalIdx((p) =>
+                    Math.min(paginasEdicao.length - 1, p + 1)
+                  );
+                }}
+                aria-label="Próxima página no comparador"
+                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-30 cursor-pointer"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Alternador Página Focada vs Lista Completa + Zoom do PDF */}
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              {itemAtivo?.pdfUrl && (
+                <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-xl px-2 py-1">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setZoomPdfModal((z) =>
+                        Math.max(0.75, Number((z - 0.15).toFixed(2)))
+                      )
+                    }
+                    aria-label="Diminuir zoom do PDF"
+                    className="p-1 rounded hover:bg-slate-800 text-slate-300 cursor-pointer"
+                  >
+                    <ZoomOut className="w-3.5 h-3.5" />
+                  </button>
+                  <span className="px-1.5 font-bold text-slate-300 tabular-nums">
+                    {Math.round(zoomPdfModal * 100)}%
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setZoomPdfModal((z) =>
+                        Math.min(1.75, Number((z + 0.15).toFixed(2)))
+                      )
+                    }
+                    aria-label="Aumentar zoom do PDF"
+                    className="p-1 rounded hover:bg-slate-800 text-slate-300 cursor-pointer"
+                  >
+                    <ZoomIn className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
+              <div className="flex items-center bg-slate-900 border border-slate-800 rounded-xl p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setModoVisaoModal('focada')}
+                  className={`px-2.5 py-1 rounded-lg font-bold flex items-center gap-1.5 cursor-pointer ${
+                    modoVisaoModal === 'focada'
+                      ? 'bg-blue-600/30 text-blue-200 border border-blue-500/40'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Columns2 className="w-3.5 h-3.5" />
+                  <span>Página a Página</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setModoVisaoModal('lista')}
+                  className={`px-2.5 py-1 rounded-lg font-bold flex items-center gap-1.5 cursor-pointer ${
+                    modoVisaoModal === 'lista'
+                      ? 'bg-blue-600/30 text-blue-200 border border-blue-500/40'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Rows3 className="w-3.5 h-3.5" />
+                  <span>Todas em Lista</span>
+                </button>
+              </div>
+            </div>
           </div>
 
-          <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
-            <button
-              type="button"
-              onClick={() => modalPrepRef.current?.close()}
-              className="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-bold cursor-pointer"
-            >
-              Fechar
-            </button>
-            <button
-              type="submit"
-              disabled={salvandoModal}
-              className="px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-extrabold flex items-center gap-2 cursor-pointer shadow-lg"
-            >
-              {salvandoModal ? (
-                <span>Salvando e Gerando Novo Áudio...</span>
+          {/* ÁREA PRINCIPAL LADO A LADO (50% PDF Original | 50% Editor do Áudio) */}
+          <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-2 gap-4 overflow-hidden">
+            {/* COLUNA ESQUERDA: Visualizador do Documento PDF Original */}
+            <div className="flex flex-col min-h-0 rounded-2xl border border-slate-800 bg-slate-950/80 overflow-hidden">
+              <div className="px-4 py-2.5 bg-slate-900/90 border-b border-slate-800 flex items-center justify-between text-xs shrink-0">
+                <span className="font-extrabold text-slate-200 flex items-center gap-1.5">
+                  <FileText className="w-4 h-4 text-blue-400" />
+                  <span>
+                    Documento PDF Original — Página {numPagRealModal} de{' '}
+                    {paginasEdicao.length || 1}
+                  </span>
+                </span>
+                <span className="text-[11px] text-slate-400">
+                  Referência visual
+                </span>
+              </div>
+
+              <div
+                ref={containerModalPdfRef}
+                className="flex-1 overflow-auto p-4 block"
+              >
+                {itemAtivo?.pdfUrl ? (
+                  <canvas
+                    ref={canvasModalRef}
+                    className="block mx-auto shadow-xl rounded-lg bg-white"
+                  />
+                ) : (
+                  <div className="p-6 rounded-2xl bg-slate-900 border border-slate-800 space-y-3 text-slate-300">
+                    <p className="text-xs font-bold uppercase text-blue-400">
+                      Item sem arquivo PDF (Ementa Original)
+                    </p>
+                    <p className="text-sm leading-relaxed whitespace-pre-line">
+                      {itemAtivo?.ementa || itemAtivo?.titulo || ''}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* COLUNA DIREITA: Editor do Texto que será Convertido em Áudio */}
+            <div className="flex flex-col min-h-0 rounded-2xl border border-slate-800 bg-slate-950/60 overflow-hidden">
+              {modoVisaoModal === 'focada' && paginasEdicao[paginaModalIdx] ? (
+                (() => {
+                  const pagFocada = paginasEdicao[paginaModalIdx];
+                  return (
+                    <div className="flex flex-col h-full min-h-0">
+                      <div className="px-4 py-2.5 bg-slate-900/90 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 shrink-0">
+                        <div className="flex items-center gap-2.5">
+                          <span className="text-sm font-extrabold text-emerald-400">
+                            🎙️ Texto do Áudio — Página {pagFocada.pagina_real}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={
+                              Boolean(pagFocada.pular) ||
+                              gerandoPreviaModal ||
+                              !pagFocada.texto.trim()
+                            }
+                            onClick={() => handleOuvirPreviaPaginaModal(pagFocada)}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all ${
+                              ouvindoPreviaModal
+                                ? 'bg-amber-500 text-slate-950'
+                                : 'bg-blue-600/25 hover:bg-blue-600/40 text-blue-200 border border-blue-500/30 disabled:opacity-40'
+                            }`}
+                          >
+                            {ouvindoPreviaModal ? (
+                              <>
+                                <Square className="w-3 h-3 fill-current" />
+                                <span>Parar Prévia</span>
+                              </>
+                            ) : (
+                              <>
+                                <Volume2 className="w-3.5 h-3.5" />
+                                <span>
+                                  {gerandoPreviaModal
+                                    ? 'Gerando...'
+                                    : 'Ouvir Prévia'}
+                                </span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+
+                        <label className="inline-flex items-center gap-2 text-xs font-bold text-red-300 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(pagFocada.pular)}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              if (checked) pararPreviaModal();
+                              setPaginasEdicao((prev) =>
+                                prev.map((x, i) =>
+                                  i === paginaModalIdx
+                                    ? { ...x, pular: checked }
+                                    : x
+                                )
+                              );
+                            }}
+                            className="w-4 h-4 accent-red-600 rounded"
+                          />
+                          <Ban className="w-3.5 h-3.5" />
+                          <span>🚫 Não ler esta página</span>
+                        </label>
+                      </div>
+
+                      <div className="flex-1 p-3 flex flex-col min-h-0">
+                        <textarea
+                          disabled={Boolean(pagFocada.pular)}
+                          value={pagFocada.texto}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (ouvindoPreviaModal) pararPreviaModal();
+                            setPaginasEdicao((prev) =>
+                              prev.map((x, i) =>
+                                i === paginaModalIdx
+                                  ? { ...x, texto: val, audio_url: null }
+                                  : x
+                              )
+                            );
+                          }}
+                          aria-label={`Texto de leitura da Página ${pagFocada.pagina_real}`}
+                          placeholder="Digite ou edite aqui exatamente o que a voz da IA deve ler nesta página..."
+                          className={`flex-1 w-full resize-none p-4 rounded-xl bg-slate-950 border text-base text-slate-100 leading-relaxed font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                            pagFocada.pular
+                              ? 'border-red-900/50 opacity-50 line-through'
+                              : 'border-slate-700'
+                          }`}
+                        />
+                      </div>
+                    </div>
+                  );
+                })()
               ) : (
-                <>
-                  <Save className="w-4 h-4" />
-                  <span>💾 Salvar e Gerar Novos Áudios</span>
-                </>
+                <div className="flex-1 overflow-y-auto p-3 space-y-3">
+                  {paginasEdicao.map((p, idx) => {
+                    const ativa = idx === paginaModalIdx;
+                    return (
+                      <div
+                        key={p.pagina_real}
+                        onClick={() => {
+                          if (paginaModalIdx !== idx) {
+                            pararPreviaModal();
+                            setPaginaModalIdx(idx);
+                          }
+                        }}
+                        className={`p-3.5 rounded-2xl border transition-all ${
+                          p.pular
+                            ? 'bg-slate-950/60 border-red-900/50 opacity-60'
+                            : ativa
+                              ? 'bg-slate-800/95 border-blue-500 ring-2 ring-blue-500/30'
+                              : 'bg-slate-900/80 border-slate-700/80 hover:border-slate-600'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-3 mb-2">
+                          <span className="text-sm font-extrabold text-blue-400">
+                            Página {p.pagina_real}{' '}
+                            {ativa && (
+                              <span className="text-[11px] font-bold text-emerald-400 ml-1">
+                                (Exibida no PDF ao lado)
+                              </span>
+                            )}
+                          </span>
+
+                          <label className="inline-flex items-center gap-2 text-xs font-bold text-red-300 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(p.pular)}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                setPaginasEdicao((prev) =>
+                                  prev.map((x, i) =>
+                                    i === idx ? { ...x, pular: checked } : x
+                                  )
+                                );
+                              }}
+                              className="w-4 h-4 accent-red-600 rounded"
+                            />
+                            <Ban className="w-3.5 h-3.5" />
+                            <span>🚫 Não ler esta página</span>
+                          </label>
+                        </div>
+
+                        <textarea
+                          rows={6}
+                          disabled={Boolean(p.pular)}
+                          value={p.texto}
+                          onFocus={() => {
+                            if (paginaModalIdx !== idx) {
+                              pararPreviaModal();
+                              setPaginaModalIdx(idx);
+                            }
+                          }}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setPaginasEdicao((prev) =>
+                              prev.map((x, i) =>
+                                i === idx
+                                  ? { ...x, texto: val, audio_url: null }
+                                  : x
+                              )
+                            );
+                          }}
+                          aria-label={`Texto de leitura da Página ${p.pagina_real}`}
+                          className="w-full p-3 rounded-xl bg-slate-950 border border-slate-700 text-sm text-slate-100 leading-relaxed font-medium focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
               )}
-            </button>
+            </div>
+          </div>
+
+          {/* Rodapé Fixo de Ações */}
+          <div className="flex items-center justify-between gap-3 pt-2 border-t border-slate-800 shrink-0">
+            <span className="text-xs text-slate-400 hidden sm:inline">
+              Dica: Você pode ouvir uma prévia rápida da página atual ou salvar para gerar
+              todos os áudios atualizados.
+            </span>
+
+            <div className="flex items-center gap-3 ml-auto">
+              <button
+                type="button"
+                onClick={fecharModalPreparacao}
+                className="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-bold cursor-pointer"
+              >
+                Fechar
+              </button>
+              <button
+                type="submit"
+                disabled={salvandoModal}
+                className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-extrabold flex items-center gap-2 cursor-pointer shadow-lg"
+              >
+                {salvandoModal ? (
+                  <span>Salvando e Gerando Novo Áudio...</span>
+                ) : (
+                  <>
+                    <Save className="w-4 h-4" />
+                    <span>💾 Salvar e Gerar Novos Áudios</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </form>
       </dialog>

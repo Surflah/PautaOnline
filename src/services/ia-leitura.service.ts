@@ -200,12 +200,21 @@ export function limparTextoLegislativoDeterministico(raw: string): string {
   txt = txt.replace(/-{4,}/g, ' ');
   txt = txt.replace(/\.{4,}/g, ' ');
 
-  // 2. Une linhas quebradas no meio de frases pelo layout do PDF
-  txt = txt
+  // 2. Une linhas quebradas no meio de frases pelo layout do PDF (ignorando números de página isolados no topo/base)
+  const linhasBrutas = txt
     .split(/\r?\n/)
     .map((l) => l.trim())
-    .filter(Boolean)
-    .join(' ');
+    .filter(Boolean);
+  while (linhasBrutas.length > 1 && /^\d{1,3}$/.test(linhasBrutas[0])) {
+    linhasBrutas.shift();
+  }
+  while (
+    linhasBrutas.length > 1 &&
+    /^\d{1,3}$/.test(linhasBrutas[linhasBrutas.length - 1])
+  ) {
+    linhasBrutas.pop();
+  }
+  txt = linhasBrutas.join(' ');
 
   // 3. Converte datas DD/MM/AAAA para extenso ("25 de novembro de 2026") ANTES de tratar barras número/ano
   txt = txt.replace(
